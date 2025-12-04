@@ -1,0 +1,1160 @@
+
+/// <reference lib="dom" />
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Sidebar } from './components/Sidebar';
+import { LayerPanel } from './components/LayerPanel';
+import { ContextMenu } from './components/ContextMenu';
+import { CanvasLayer, AppSettings, DragState, SavedVersion, Rect, Language } from './types';
+import { getSnapLines, resizeLayer, getSnapDelta } from './utils/geometry';
+import { 
+  Undo, Redo, Download, ZoomIn, ZoomOut, Maximize, Languages, 
+  Magnet, Scaling, Menu, LayoutGrid,
+  AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignEndVertical, AlignVerticalJustifyCenter,
+  AlignVerticalJustifyCenter as VStitchIcon, AlignHorizontalJustifyCenter as HStitchIcon, Wand2,
+  Layers, Combine, Info, MoreHorizontal, MousePointer, X
+} from 'lucide-react';
+import { translations } from './utils/i18n';
+import { AnimatePresence, motion } from 'framer-motion';
+
+const INITIAL_SETTINGS: AppSettings = {
+  snapToGrid: true,
+  snapThreshold: 10,
+  keepAspectRatio: true,
+  showGuides: true,
+  stitchGap: 0,
+  smartStitch: false,
+  stitchScope: 'selected',
+  backgroundMode: 'grid',
+  backgroundColor: '#ffffff',
+  previewBackground: true
+};
+
+// --- Helper Components ---
+
+interface TooltipButtonProps { 
+  title: string; 
+  onClick: () => void; 
+  icon: React.ElementType; 
+  active?: boolean; 
+  disabled?: boolean; 
+  className?: string;
+  tooltipContent?: React.ReactNode;
+}
+
+const TooltipButton = React.forwardRef<HTMLButtonElement, TooltipButtonProps>(({ 
+  title, 
+  onClick, 
+  icon: Icon, 
+  active, 
+  disabled, 
+  className,
+  tooltipContent 
+}, ref) => (
+  <div className="relative group flex items-center justify-center">
+    <button
+      ref={ref}
+      onClick={onClick}
+      disabled={disabled}
+      className={`
+        p-2.5 rounded-xl transition-all duration-200 outline-none flex items-center justify-center
+        ${active 
+          ? 'bg-primary text-white shadow-lg shadow-primary/25 ring-0' 
+          : 'text-slate-400 hover:text-white hover:bg-slate-700/80 active:bg-slate-700'
+        } 
+        ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'} 
+        ${className || ''}
+      `}
+    >
+      <Icon className="w-5 h-5" />
+    </button>
+    {/* Tooltip */}
+    {!disabled && (
+        <div className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none
+        px-3 py-2 bg-slate-900 text-white text-xs font-medium rounded-lg border border-slate-700/50 whitespace-nowrap z-[60] shadow-xl
+        md:-top-14 md:left-1/2 md:-translate-x-1/2
+        max-md:left-full max-md:ml-3 max-md:top-1/2 max-md:-translate-y-1/2
+        ">
+        <div className="font-semibold mb-0.5">{title}</div>
+        {tooltipContent && <div className="text-slate-400 text-[10px] max-w-[150px] whitespace-normal leading-tight">{tooltipContent}</div>}
+        
+        {/* Arrow for tooltip */}
+        <div className="absolute w-2 h-2 bg-slate-900 border-l border-b border-slate-700/50 rotate-45 
+            md:-bottom-1 md:left-1/2 md:-translate-x-1/2 md:border-l-0 md:border-t-0 md:border-r md:border-b
+            max-md:left-[-5px] max-md:top-1/2 max-md:-translate-y-1/2
+        "></div>
+        </div>
+    )}
+  </div>
+));
+TooltipButton.displayName = 'TooltipButton';
+
+export default function App() {
+  // --- State ---
+  const [layers, setLayers] = useState<CanvasLayer[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS);
+  const [history, setHistory] = useState<CanvasLayer[][]>([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [versions, setVersions] = useState<SavedVersion[]>([]);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth > 768);
+  const [lang, setLang] = useState<Language>('zh');
+  const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
+  const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
+  
+  // UI States
+  const [showLayerPanel, setShowLayerPanel] = useState(false);
+  const [layerPanelPos, setLayerPanelPos] = useState({ x: window.innerWidth - 260, y: 80 });
+  const [layerPanelAlign, setLayerPanelAlign] = useState<'top-left' | 'bottom-left'>('top-left');
+  const [activeMenu, setActiveMenu] = useState<string | null>(null); // 'stitch', 'align', 'more'
+
+  // --- Refs ---
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const layersBtnRef = useRef<HTMLButtonElement>(null);
+  
+  const dragState = useRef<{
+    isDragging: boolean;
+    isResizing: boolean;
+    isPanning: boolean;
+    startX: number;
+    startY: number;
+    initialPan: { x: number; y: number };
+    initialLayers: Record<string, { x: number; y: number; width: number; height: number }>;
+    handle?: string;
+  }>({
+    isDragging: false,
+    isResizing: false,
+    isPanning: false,
+    startX: 0,
+    startY: 0,
+    initialPan: { x: 0, y: 0 },
+    initialLayers: {}
+  });
+  
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
+
+  // --- History Management ---
+  const pushHistory = useCallback((newLayers: CanvasLayer[]) => {
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newLayers);
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  }, [history, historyIndex]);
+
+  const undo = () => {
+    if (historyIndex > 0) {
+      const prev = history[historyIndex - 1];
+      setLayers(prev); 
+      setHistoryIndex(historyIndex - 1);
+    }
+  };
+
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      const next = history[historyIndex + 1];
+      setLayers(next);
+      setHistoryIndex(historyIndex + 1);
+    }
+  };
+
+  // --- Image Handling ---
+  const processFiles = (files: File[]) => {
+      let loadedCount = 0;
+      const newLayers: CanvasLayer[] = [];
+
+      files.forEach((file) => {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const img = new Image();
+          img.onload = () => {
+            const count = layers.length + loadedCount;
+            const aspectRatio = img.width / img.height;
+            const baseSize = 300;
+            
+            const viewportCenter = {
+                x: -pan.x + (window.innerWidth / 2) / zoom,
+                y: -pan.y + (window.innerHeight / 2) / zoom
+            };
+
+            newLayers.push({
+              id: Math.random().toString(36).substr(2, 9),
+              src: ev.target?.result as string,
+              x: viewportCenter.x - 150 + (count * 20),
+              y: viewportCenter.y - 150 + (count * 20),
+              width: baseSize,
+              height: baseSize / aspectRatio,
+              zIndex: count,
+              name: file.name
+            });
+
+            loadedCount++;
+            if (loadedCount === files.length) {
+              const updatedLayers = [...layers, ...newLayers];
+              setLayers(updatedLayers);
+              pushHistory(updatedLayers);
+              
+              // Auto hide sidebar and fit view
+              if (isSidebarOpen) {
+                  setIsSidebarOpen(false);
+                  // Wait for transition (300ms) to finish so we calculate fit based on full width
+                  setTimeout(() => handleFitView(updatedLayers), 350);
+              } else {
+                  handleFitView(updatedLayers);
+              }
+            }
+          };
+          img.src = ev.target?.result as string;
+        };
+        reader.readAsDataURL(file);
+      });
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        processFiles(Array.from(e.dataTransfer.files));
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+      e.preventDefault();
+  };
+
+  // --- Logic for Auto Stitching & Alignment ---
+  const handleAutoStitch = (direction: 'vertical' | 'horizontal') => {
+    if (layers.length === 0) return;
+    
+    // Determine which layers to stitch based on scope setting
+    let targetLayers: CanvasLayer[] = [];
+    if (settings.stitchScope === 'all') {
+        targetLayers = [...layers];
+    } else {
+        targetLayers = layers.filter(l => selectedIds.has(l.id));
+        if (targetLayers.length < 2) {
+             if (targetLayers.length === 0) return;
+        }
+    }
+
+    // Sort layers based on direction
+    if (direction === 'vertical') {
+      targetLayers.sort((a, b) => a.y - b.y);
+    } else {
+      targetLayers.sort((a, b) => a.x - b.x);
+    }
+
+    const first = targetLayers[0];
+    const alignPos = direction === 'vertical' ? first.x : first.y;
+    let referenceDimension = 0;
+    
+    if (settings.smartStitch) {
+        if (direction === 'vertical') referenceDimension = first.width;
+        else referenceDimension = first.height;
+    }
+
+    const stitchedIds = new Set(targetLayers.map(l => l.id));
+    
+    const processedStitched = targetLayers.map((layer, index) => {
+      let newLayer = { ...layer };
+      
+      // Smart Stitch resizing
+      if (settings.smartStitch) {
+         if (direction === 'vertical' && newLayer.width !== referenceDimension) {
+             const ratio = newLayer.width / newLayer.height;
+             newLayer.width = referenceDimension;
+             newLayer.height = referenceDimension / ratio;
+         } else if (direction === 'horizontal' && newLayer.height !== referenceDimension) {
+             const ratio = newLayer.width / newLayer.height;
+             newLayer.height = referenceDimension;
+             newLayer.width = referenceDimension * ratio;
+         }
+      }
+      return newLayer;
+    });
+
+    // Positioning
+    let runningPos = direction === 'vertical' ? processedStitched[0].y : processedStitched[0].x;
+    const gap = Number(settings.stitchGap) || 0;
+    
+    const finalStitched = processedStitched.map((layer, i) => {
+        const l = { ...layer };
+        if (i > 0) {
+            if (direction === 'vertical') {
+                l.x = alignPos;
+                l.y = runningPos + gap;
+            } else {
+                l.y = alignPos;
+                l.x = runningPos + gap;
+            }
+        }
+        if (direction === 'vertical') runningPos = l.y + l.height;
+        else runningPos = l.x + l.width;
+        return l;
+    });
+
+    // Merge back into main layers list
+    const others = layers.filter(l => !stitchedIds.has(l.id));
+    const newAllLayers = [...others, ...finalStitched];
+    
+    setLayers(newAllLayers);
+    pushHistory(newAllLayers);
+    setActiveMenu(null);
+  };
+
+  const handleAlign = (type: 'left' | 'center-h' | 'right' | 'top' | 'middle-v' | 'bottom') => {
+      if (selectedIds.size < 2) return;
+      const targetLayers = layers.filter(l => selectedIds.has(l.id));
+      if (targetLayers.length === 0) return;
+
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      targetLayers.forEach(l => {
+          minX = Math.min(minX, l.x);
+          maxX = Math.max(maxX, l.x + l.width);
+          minY = Math.min(minY, l.y);
+          maxY = Math.max(maxY, l.y + l.height);
+      });
+
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+
+      const aligned = targetLayers.map(l => {
+          const newL = { ...l };
+          switch(type) {
+              case 'left': newL.x = minX; break;
+              case 'center-h': newL.x = centerX - (l.width / 2); break;
+              case 'right': newL.x = maxX - l.width; break;
+              case 'top': newL.y = minY; break;
+              case 'middle-v': newL.y = centerY - (l.height / 2); break;
+              case 'bottom': newL.y = maxY - l.height; break;
+          }
+          return newL;
+      });
+
+      const finalLayers = layers.map(l => {
+          if (selectedIds.has(l.id)) return aligned.find(a => a.id === l.id) || l;
+          return l;
+      });
+      setLayers(finalLayers);
+      pushHistory(finalLayers);
+      setActiveMenu(null);
+  };
+
+  const toggleLayerPanel = () => {
+    if (!showLayerPanel && layersBtnRef.current) {
+        const rect = layersBtnRef.current.getBoundingClientRect();
+        const isDesktop = window.innerWidth >= 768;
+        
+        if (isDesktop) {
+            // Desktop: Tight positioning above the button
+            // Calculate distance from bottom of screen to top of button
+            const bottomDistance = window.innerHeight - rect.top;
+            
+            setLayerPanelPos({
+                x: rect.left, 
+                y: bottomDistance + 8 // 8px gap above button
+            });
+            setLayerPanelAlign('bottom-left');
+        } else {
+            // Mobile: Right of button (vertical toolbar)
+            setLayerPanelPos({
+                x: rect.right + 10,
+                y: Math.max(10, rect.top)
+            });
+            setLayerPanelAlign('top-left');
+        }
+    }
+    setShowLayerPanel(!showLayerPanel);
+  };
+  
+  // --- Fit to View Logic ---
+  const handleFitView = (overrideLayers?: CanvasLayer[]) => {
+      const targetLayers = Array.isArray(overrideLayers) ? overrideLayers : layers;
+      
+      if (targetLayers.length === 0) {
+          setZoom(1);
+          setPan({ x: 0, y: 0 });
+          return;
+      }
+
+      // Calculate bounding box of all layers
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      targetLayers.forEach(l => {
+          minX = Math.min(minX, l.x);
+          minY = Math.min(minY, l.y);
+          maxX = Math.max(maxX, l.x + l.width);
+          maxY = Math.max(maxY, l.y + l.height);
+      });
+
+      const contentWidth = maxX - minX;
+      const contentHeight = maxY - minY;
+      const padding = 50;
+
+      // Get available view area
+      const container = canvasRef.current?.parentElement;
+      if (!container) return;
+      
+      const viewWidth = container.clientWidth;
+      const viewHeight = container.clientHeight;
+
+      // Calculate scale to fit
+      const scaleX = (viewWidth - padding * 2) / contentWidth;
+      const scaleY = (viewHeight - padding * 2) / contentHeight;
+      const newZoom = Math.min(3, Math.min(scaleX, scaleY)); // Cap max zoom
+
+      // Center logic
+      const centeredX = (viewWidth - contentWidth * newZoom) / 2 - minX * newZoom;
+      const centeredY = (viewHeight - contentHeight * newZoom) / 2 - minY * newZoom;
+
+      setZoom(newZoom);
+      setPan({ x: centeredX, y: centeredY });
+  };
+
+  // --- Canvas Interaction ---
+  const getCanvasCoordinates = (e: React.PointerEvent | PointerEvent) => {
+     const container = canvasRef.current?.parentElement;
+     if (!container) return { x: 0, y: 0 };
+     const containerRect = container.getBoundingClientRect();
+     return {
+         x: (e.clientX - containerRect.left - pan.x) / zoom,
+         y: (e.clientY - containerRect.top - pan.y) / zoom
+     };
+  };
+
+  const handlePointerDown = (e: React.PointerEvent, layerId?: string, handle?: string) => {
+    if (e.button !== 0) return; 
+    e.stopPropagation();
+    setActiveMenu(null);
+    
+    if (layerId) {
+      const coords = getCanvasCoordinates(e);
+      dragState.current.startX = coords.x;
+      dragState.current.startY = coords.y;
+
+      let newSelectedIds = new Set(selectedIds);
+      const isMultiSelect = e.shiftKey || isBatchSelectMode;
+
+      if (isMultiSelect) {
+        if (newSelectedIds.has(layerId)) newSelectedIds.delete(layerId);
+        else newSelectedIds.add(layerId);
+      } else {
+        if (!newSelectedIds.has(layerId)) newSelectedIds = new Set([layerId]);
+      }
+      setSelectedIds(newSelectedIds);
+
+      const initialLayersMap: Record<string, Rect> = {};
+      newSelectedIds.forEach(id => {
+        const layer = layers.find(l => l.id === id);
+        if (layer) initialLayersMap[id] = { ...layer };
+      });
+
+      if (handle) {
+        dragState.current.isResizing = true;
+        dragState.current.handle = handle;
+        dragState.current.initialLayers = { [layerId]: { ...layers.find(l => l.id === layerId)! } };
+      } else {
+        dragState.current.isDragging = true;
+        dragState.current.initialLayers = initialLayersMap;
+      }
+    } else {
+        if (!e.shiftKey && !isBatchSelectMode) setSelectedIds(new Set());
+        dragState.current.isPanning = true;
+        dragState.current.startX = e.clientX;
+        dragState.current.startY = e.clientY;
+        dragState.current.initialPan = { ...pan };
+    }
+    (e.target as Element).setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!dragState.current.isDragging && !dragState.current.isResizing && !dragState.current.isPanning) return;
+    
+    if (dragState.current.isPanning) {
+        const dx = e.clientX - dragState.current.startX;
+        const dy = e.clientY - dragState.current.startY;
+        setPan({
+            x: dragState.current.initialPan.x + dx,
+            y: dragState.current.initialPan.y + dy
+        });
+        return;
+    }
+
+    const coords = getCanvasCoordinates(e);
+    const dx = coords.x - dragState.current.startX;
+    const dy = coords.y - dragState.current.startY;
+    const initial = dragState.current.initialLayers;
+    const scaledThreshold = settings.snapThreshold / zoom;
+
+    const newLayers = layers.map((l: CanvasLayer) => {
+      if (!initial[l.id]) return l;
+      const init = initial[l.id];
+
+      if (dragState.current.isResizing) {
+        const handle = dragState.current.handle!;
+        let proposed = resizeLayer(init, handle, dx, dy, settings.keepAspectRatio);
+
+        if (settings.snapToGrid) {
+            const otherRects = layers.filter(o => o.id !== l.id).map(o => ({...o}));
+            const xTargets: number[] = [0];
+            const yTargets: number[] = [0];
+            otherRects.forEach(r => {
+                xTargets.push(r.x, r.x + r.width);
+                yTargets.push(r.y, r.y + r.height);
+            });
+
+            const activeRight = handle.includes('e');
+            const activeLeft = handle.includes('w');
+            const activeBottom = handle.includes('s');
+            const activeTop = handle.includes('n');
+
+            let snapDx = 0;
+            let snapDy = 0;
+
+            if (activeRight) {
+                const delta = getSnapDelta(proposed.x + proposed.width, xTargets, scaledThreshold);
+                if (delta !== null) snapDx = delta;
+            } else if (activeLeft) {
+                const delta = getSnapDelta(proposed.x, xTargets, scaledThreshold);
+                if (delta !== null) snapDx = delta;
+            }
+
+            if (activeBottom) {
+                const delta = getSnapDelta(proposed.y + proposed.height, yTargets, scaledThreshold);
+                if (delta !== null) snapDy = delta;
+            } else if (activeTop) {
+                const delta = getSnapDelta(proposed.y, yTargets, scaledThreshold);
+                if (delta !== null) snapDy = delta;
+            }
+
+            if (activeRight && snapDx !== 0) proposed.width += snapDx;
+            if (activeLeft && snapDx !== 0) { proposed.x += snapDx; proposed.width -= snapDx; }
+            if (activeBottom && snapDy !== 0) proposed.height += snapDy;
+            if (activeTop && snapDy !== 0) { proposed.y += snapDy; proposed.height -= snapDy; }
+        }
+        return { ...l, ...proposed };
+      } else {
+        let newX = init.x + dx;
+        let newY = init.y + dy;
+
+        if (settings.snapToGrid && Object.keys(initial).length > 0) {
+            const otherRects = layers.filter(other => !initial[other.id]).map(o => ({x: o.x, y: o.y, width: o.width, height: o.height}));
+            const snap = getSnapLines(
+                { x: newX, y: newY, width: init.width, height: init.height }, 
+                otherRects, 5000, 5000, scaledThreshold
+            );
+            if (snap.x !== null) newX += snap.x;
+            if (snap.y !== null) newY += snap.y;
+        }
+        return { ...l, x: newX, y: newY };
+      }
+    });
+    setLayers(newLayers);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (dragState.current.isDragging || dragState.current.isResizing) pushHistory(layers);
+    dragState.current = { 
+        isDragging: false, isResizing: false, isPanning: false,
+        startX: 0, startY: 0, initialPan: { x: 0, y: 0}, initialLayers: {} 
+    };
+    (e.target as Element).releasePointerCapture(e.pointerId);
+  };
+  
+  // Explicitly select a layer on context menu click to ensure actions apply to it
+  const handleLayerContextMenu = (e: React.MouseEvent, layerId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // If not already selected, select it (replacing selection unless shift held, though usually right click replaces)
+    if (!selectedIds.has(layerId)) {
+        setSelectedIds(new Set([layerId]));
+    }
+    
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  // --- Deletion & Layer Order ---
+  const deleteSelected = () => {
+    const newLayers = layers.filter(l => !selectedIds.has(l.id));
+    setLayers(newLayers);
+    setSelectedIds(new Set());
+    pushHistory(newLayers);
+  };
+  const bringToFront = () => {
+    const selected = layers.filter(l => selectedIds.has(l.id));
+    const unselected = layers.filter(l => !selectedIds.has(l.id));
+    setLayers([...unselected, ...selected]);
+    pushHistory([...unselected, ...selected]);
+  };
+  const sendToBack = () => {
+    const selected = layers.filter(l => selectedIds.has(l.id));
+    const unselected = layers.filter(l => !selectedIds.has(l.id));
+    setLayers([...selected, ...unselected]);
+    pushHistory([...selected, ...unselected]);
+  };
+  const reorderLayers = (newLayers: CanvasLayer[]) => {
+      setLayers(newLayers);
+      pushHistory(newLayers);
+  };
+
+  // --- Export Logic ---
+  const generateExportUrl = async (singleLayerId?: string) => {
+    const canvas = document.createElement('canvas');
+    let layersToExport = singleLayerId ? layers.filter(l => l.id === singleLayerId) : layers;
+    if (layersToExport.length === 0) return null;
+
+    let bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    layersToExport.forEach(l => {
+      bounds.minX = Math.min(bounds.minX, l.x);
+      bounds.minY = Math.min(bounds.minY, l.y);
+      bounds.maxX = Math.max(bounds.maxX, l.x + l.width);
+      bounds.maxY = Math.max(bounds.maxY, l.y + l.height);
+    });
+
+    const padding = 0;
+    const width = bounds.maxX - bounds.minX + padding * 2;
+    const height = bounds.maxY - bounds.minY + padding * 2;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    if (!singleLayerId && settings.backgroundMode === 'solid') {
+        ctx.fillStyle = settings.backgroundColor;
+        ctx.fillRect(0, 0, width, height);
+    }
+    for (const layer of layersToExport) {
+      const img = new Image();
+      img.src = layer.src;
+      img.crossOrigin = "anonymous";
+      await new Promise(resolve => { img.onload = resolve; });
+      ctx.drawImage(img, layer.x - bounds.minX + padding, layer.y - bounds.minY + padding, layer.width, layer.height);
+    }
+    return canvas.toDataURL('image/png');
+  };
+
+  const handleExportClick = async (singleLayerId?: string) => {
+      const url = await generateExportUrl(singleLayerId);
+      if (url) {
+          if (singleLayerId) {
+             // Direct download for single layer context menu (keep simple)
+             downloadImage(url);
+          } else {
+             // Show preview for main export
+             setExportPreviewUrl(url);
+          }
+      }
+  };
+
+  const downloadImage = (url: string) => {
+    const link = document.createElement('a');
+    link.download = `collage-${Date.now()}.png`;
+    link.href = url;
+    link.click();
+    
+    // Save version history logic
+    const newVersion: SavedVersion = {
+        id: Date.now().toString(), timestamp: Date.now(), layers: JSON.parse(JSON.stringify(layers)), thumbnail: url 
+    };
+    setVersions(prev => [newVersion, ...prev]);
+    try {
+        const stored = localStorage.getItem('collage_versions');
+        const parsed = stored ? JSON.parse(stored) : [];
+        if (parsed.length > 5) parsed.pop();
+        localStorage.setItem('collage_versions', JSON.stringify([newVersion, ...parsed]));
+    } catch (e) { console.warn("Local storage full"); }
+  };
+
+  
+  useEffect(() => {
+     try {
+         const stored = localStorage.getItem('collage_versions');
+         if (stored) setVersions(JSON.parse(stored));
+     } catch (e) {}
+  }, []);
+
+  const loadVersion = (v: SavedVersion) => {
+      if (confirm(translations[lang].confirmLoad)) {
+          setLayers(v.layers);
+          pushHistory(v.layers);
+          setContextMenu(null);
+      }
+  };
+
+  useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+              e.preventDefault();
+              if (e.shiftKey) redo(); else undo();
+          }
+          if (e.key === 'Delete' || e.key === 'Backspace') {
+              if (selectedIds.size > 0) deleteSelected();
+          }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [layers, selectedIds, history, historyIndex]);
+
+  // --- Click Outside to close Popovers ---
+  useEffect(() => {
+    const handleClickOutside = () => setActiveMenu(null);
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, []);
+
+  // Compute background style
+  const backgroundStyle = settings.backgroundMode === 'solid' 
+      ? (settings.previewBackground ? settings.backgroundColor : '#0f172a')
+      : '#0f172a';
+
+  return (
+    <div 
+        className="flex flex-col h-[100dvh] bg-background overflow-hidden relative"
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+    >
+      
+      {/* --- Top Bar --- */}
+      <div className="h-14 bg-surface/90 backdrop-blur border-b border-slate-700 flex items-center justify-between px-3 md:px-4 z-40 shrink-0 shadow-sm">
+         <div className="flex items-center gap-3">
+             <button 
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                className="p-2 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors"
+             >
+                <Menu className="w-5 h-5" />
+             </button>
+             
+             <h1 className="font-bold text-lg flex items-center gap-2 mr-2 text-slate-100">
+                <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                    <LayoutGrid className="w-4 h-4 text-white" />
+                </div>
+                CollagePro
+             </h1>
+         </div>
+
+         <div className="flex items-center gap-2">
+             <div className="flex items-center bg-slate-800/50 rounded-lg p-1 mr-2 border border-slate-700/50">
+                 <button onClick={() => setZoom(z => Math.max(0.2, z - 0.1))} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors hidden sm:block">
+                    <ZoomOut className="w-4 h-4" />
+                 </button>
+                 <span className="text-xs w-10 text-center text-slate-400 font-mono hidden sm:block">{Math.round(zoom * 100)}%</span>
+                 <button onClick={() => setZoom(z => Math.min(3, z + 0.1))} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors hidden sm:block">
+                    <ZoomIn className="w-4 h-4" />
+                 </button>
+                 <button onClick={() => handleFitView()} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors" title={translations[lang].fitView}>
+                    <Maximize className="w-4 h-4" />
+                 </button>
+             </div>
+             
+             <button onClick={() => setLang(l => l === 'en' ? 'zh' : 'en')} className="flex items-center gap-1 px-3 py-1.5 rounded-lg hover:bg-slate-700 text-slate-300 text-xs font-medium border border-transparent hover:border-slate-600 transition-all">
+                <Languages className="w-4 h-4" />
+                <span className="hidden md:inline">{lang === 'en' ? 'EN' : '中'}</span>
+             </button>
+             <button onClick={() => handleExportClick()} className="bg-primary hover:bg-indigo-600 text-white p-2 md:px-4 md:py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 shadow-lg shadow-indigo-500/20 transition-all">
+                <Download className="w-4 h-4" /> 
+                <span className="hidden md:inline">{translations[lang].export}</span>
+             </button>
+         </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden relative">
+          <Sidebar 
+            settings={settings}
+            updateSettings={(s) => setSettings(prev => ({...prev, ...s}))}
+            versions={versions}
+            onLoadVersion={loadVersion}
+            isOpen={isSidebarOpen}
+            lang={lang}
+            onProcessFiles={processFiles}
+          />
+
+          <div 
+            className="flex-1 overflow-hidden relative flex flex-col shadow-inner"
+            style={{ 
+                backgroundColor: backgroundStyle,
+                cursor: dragState.current.isPanning ? 'grabbing' : 'grab'
+            }}
+            onPointerDown={(e) => handlePointerDown(e)}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onContextMenu={(e) => { 
+                e.preventDefault(); 
+                // Only show menu if we clicked background (deselecting).
+                // If we clicked a layer, the layer's handler would have run already or bubbling is handled.
+                // But context menu event bubbles.
+                // We rely on handleLayerContextMenu stopping propagation?
+                // Actually contextmenu event is different from pointerdown.
+                // We will handle generic background context menu here.
+                setContextMenu({ x: e.clientX, y: e.clientY }); 
+            }}
+            onWheel={(e) => {
+                if (e.ctrlKey) {
+                    e.preventDefault();
+                    setZoom(z => Math.min(3, Math.max(0.2, z - e.deltaY * 0.001)));
+                } else {
+                    setPan(p => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+                }
+            }}
+          >
+            {/* Grid */}
+            {settings.backgroundMode === 'grid' && (
+                <div className="absolute inset-0 pointer-events-none opacity-20"
+                    style={{
+                    backgroundImage: 'radial-gradient(#4b5563 1px, transparent 1px)',
+                    backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
+                    backgroundPosition: `${pan.x}px ${pan.y}px`
+                    }}
+                />
+            )}
+
+            {/* Canvas Transform */}
+            <div ref={canvasRef} className="absolute origin-top-left will-change-transform"
+                style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: '100%', height: '100%' }}>
+                {layers.map((layer) => {
+                const isSelected = selectedIds.has(layer.id);
+                return (
+                    <div
+                    key={layer.id}
+                    onPointerDown={(e) => handlePointerDown(e, layer.id)}
+                    onContextMenu={(e) => handleLayerContextMenu(e, layer.id)}
+                    style={{ position: 'absolute', left: layer.x, top: layer.y, width: layer.width, height: layer.height, cursor: 'move', touchAction: 'none' }}
+                    className={`group select-none ${isSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-transparent' : 'hover:ring-1 hover:ring-slate-500'}`}
+                    >
+                    <img src={layer.src} alt="layer" className="w-full h-full object-fill pointer-events-none select-none shadow-sm" draggable={false} />
+                    {isSelected && (
+                        <>
+                        <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nwse-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'nw')} />
+                        <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nesw-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'ne')} />
+                        <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nesw-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'sw')} />
+                        <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nwse-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'se')} />
+                        </>
+                    )}
+                    </div>
+                );
+                })}
+            </div>
+
+            {/* Responsive Toolbar */}
+            <div 
+                className="
+                    fixed z-40 transition-all duration-300 ease-in-out flex
+                    bg-surface/95 backdrop-blur-xl border border-slate-700/50 shadow-2xl
+                    
+                    /* Desktop: Bottom Center, Horizontal, Rounded */
+                    md:bottom-6 md:left-1/2 md:-translate-x-1/2 md:flex md:flex-row md:items-center md:gap-2 md:rounded-2xl md:p-1.5
+
+                    /* Mobile: Left Center, Vertical, Left-Stuck, Rounded-Right-Only */
+                    max-md:left-0 max-md:top-1/2 max-md:-translate-y-1/2 max-md:flex-col max-md:gap-2 max-md:py-3 max-md:px-1.5 max-md:rounded-r-2xl max-md:rounded-l-none
+                "
+                onPointerDown={(e) => e.stopPropagation()} 
+                onClick={(e) => e.stopPropagation()}
+            >
+                {/* Group 1: Undo/Redo */}
+                <div className="flex max-md:flex-col gap-1 shrink-0">
+                    <TooltipButton title={translations[lang].undo} onClick={undo} disabled={historyIndex === 0} icon={Undo} />
+                    <TooltipButton title={translations[lang].redo} onClick={redo} disabled={historyIndex === history.length - 1} icon={Redo} />
+                </div>
+                
+                <div className="md:w-px md:h-8 max-md:w-6 max-md:h-px bg-slate-700/50 shrink-0 mx-1 max-md:mx-auto" />
+
+                {/* Group 2: Tools */}
+                <div className="flex max-md:flex-col gap-1 shrink-0 relative">
+                    <TooltipButton 
+                        title={translations[lang].batchSelect} 
+                        onClick={() => setIsBatchSelectMode(!isBatchSelectMode)} 
+                        active={isBatchSelectMode} 
+                        icon={MousePointer} 
+                    />
+
+                    {/* Stitch Menu Trigger */}
+                    <div className="relative">
+                        <TooltipButton 
+                            title={translations[lang].autoStitch} 
+                            onClick={() => setActiveMenu(activeMenu === 'stitch' ? null : 'stitch')} 
+                            active={activeMenu === 'stitch'} 
+                            icon={Combine} 
+                        />
+                        <AnimatePresence>
+                            {activeMenu === 'stitch' && (
+                                <motion.div
+                                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                                    className="absolute bg-surface border border-slate-700 rounded-xl shadow-xl p-3 w-64 z-50 flex flex-col gap-3
+                                        md:bottom-full md:left-1/2 md:-translate-x-1/2 md:mb-3
+                                        max-md:left-full max-md:top-0 max-md:ml-2
+                                    "
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <div className="text-xs font-bold text-slate-400 uppercase">{translations[lang].stitchSettings}</div>
+                                    
+                                    {/* Scope Selection */}
+                                    <div className="flex flex-col gap-1.5">
+                                        <div className="text-[10px] text-slate-500 font-medium uppercase">{translations[lang].stitchScope}</div>
+                                        <div className="flex rounded bg-slate-800 p-0.5">
+                                            <button 
+                                                onClick={() => setSettings(s => ({...s, stitchScope: 'selected'}))}
+                                                className={`flex-1 py-1 text-[10px] font-medium rounded transition-colors ${settings.stitchScope === 'selected' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
+                                            >
+                                                {translations[lang].scopeSelected}
+                                            </button>
+                                            <button 
+                                                onClick={() => setSettings(s => ({...s, stitchScope: 'all'}))}
+                                                className={`flex-1 py-1 text-[10px] font-medium rounded transition-colors ${settings.stitchScope === 'all' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
+                                            >
+                                                {translations[lang].scopeAll}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Gap Input */}
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-sm text-slate-300 w-12">{translations[lang].gap}</span>
+                                        <input 
+                                            type="number" 
+                                            value={settings.stitchGap}
+                                            onChange={(e) => setSettings({...settings, stitchGap: Number(e.target.value)})}
+                                            className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:border-primary outline-none"
+                                        />
+                                        <span className="text-xs text-slate-500">{translations[lang].px}</span>
+                                    </div>
+
+                                    {/* Smart Stitch Toggle */}
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm text-slate-300">{translations[lang].smartStitch}</span>
+                                            <div className="group relative">
+                                                <Info className="w-3.5 h-3.5 text-slate-500 hover:text-slate-300 cursor-help" />
+                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-slate-900 p-2 rounded text-[10px] text-slate-300 border border-slate-700 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-xl">
+                                                    {translations[lang].smartStitchDesc}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={() => setSettings({...settings, smartStitch: !settings.smartStitch})}
+                                            className={`w-10 h-5 rounded-full transition-colors relative ${settings.smartStitch ? 'bg-primary' : 'bg-slate-700'}`}
+                                        >
+                                            <div className={`absolute top-1 bottom-1 w-3 h-3 bg-white rounded-full transition-transform ${settings.smartStitch ? 'left-6' : 'left-1'}`} />
+                                        </button>
+                                    </div>
+
+                                    <div className="h-px bg-slate-700/50" />
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button 
+                                            onClick={() => handleAutoStitch('vertical')}
+                                            className="flex flex-col items-center gap-1 p-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors text-xs text-slate-300"
+                                        >
+                                            <VStitchIcon className="w-5 h-5" />
+                                            {translations[lang].vertical}
+                                        </button>
+                                        <button 
+                                            onClick={() => handleAutoStitch('horizontal')}
+                                            className="flex flex-col items-center gap-1 p-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors text-xs text-slate-300"
+                                        >
+                                            <HStitchIcon className="w-5 h-5" />
+                                            {translations[lang].horizontal}
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+
+                    {/* Align Menu Trigger */}
+                    <div className="relative">
+                        <TooltipButton 
+                            title={translations[lang].alignment} 
+                            onClick={() => setActiveMenu(activeMenu === 'align' ? null : 'align')} 
+                            active={activeMenu === 'align'} 
+                            icon={AlignLeft} 
+                        />
+                        <AnimatePresence>
+                            {activeMenu === 'align' && (
+                                <motion.div
+                                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                                    className="absolute bg-surface border border-slate-700 rounded-xl shadow-xl p-3 w-48 z-50
+                                        md:bottom-full md:left-1/2 md:-translate-x-1/2 md:mb-3
+                                        max-md:left-full max-md:top-0 max-md:ml-2
+                                    "
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <div className="text-xs font-bold text-slate-400 uppercase mb-2">{translations[lang].alignTools}</div>
+                                    <div className="grid grid-cols-3 gap-1">
+                                        <TooltipButton title={translations[lang].alignLeft} onClick={() => handleAlign('left')} icon={AlignLeft} className="bg-slate-800/50 hover:bg-slate-700" />
+                                        <TooltipButton title={translations[lang].alignCenterH} onClick={() => handleAlign('center-h')} icon={AlignCenter} className="bg-slate-800/50 hover:bg-slate-700" />
+                                        <TooltipButton title={translations[lang].alignRight} onClick={() => handleAlign('right')} icon={AlignRight} className="bg-slate-800/50 hover:bg-slate-700" />
+                                        <TooltipButton title={translations[lang].alignTop} onClick={() => handleAlign('top')} icon={AlignStartVertical} className="bg-slate-800/50 hover:bg-slate-700" />
+                                        <TooltipButton title={translations[lang].alignMiddle} onClick={() => handleAlign('middle-v')} icon={AlignVerticalJustifyCenter} className="bg-slate-800/50 hover:bg-slate-700 rotate-90" />
+                                        <TooltipButton title={translations[lang].alignBottom} onClick={() => handleAlign('bottom')} icon={AlignEndVertical} className="bg-slate-800/50 hover:bg-slate-700" />
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                </div>
+
+                <div className="md:w-px md:h-8 max-md:w-6 max-md:h-px bg-slate-700/50 shrink-0 mx-1 max-md:mx-auto" />
+
+                {/* Group 3: Settings */}
+                <div className="flex max-md:flex-col gap-1 shrink-0 max-md:hidden">
+                    <TooltipButton 
+                        title={translations[lang].snapToGrid} 
+                        onClick={() => setSettings(s => ({...s, snapToGrid: !s.snapToGrid}))} 
+                        active={settings.snapToGrid} 
+                        icon={Magnet} 
+                    />
+                    <TooltipButton 
+                        title={translations[lang].keepAspectRatio} 
+                        onClick={() => setSettings(s => ({...s, keepAspectRatio: !s.keepAspectRatio}))} 
+                        active={settings.keepAspectRatio} 
+                        icon={Scaling} 
+                    />
+                </div>
+
+                {/* Mobile More Menu */}
+                <div className="md:hidden relative">
+                    <TooltipButton 
+                        title={translations[lang].more} 
+                        onClick={() => setActiveMenu(activeMenu === 'more' ? null : 'more')} 
+                        active={activeMenu === 'more'}
+                        icon={MoreHorizontal} 
+                    />
+                    <AnimatePresence>
+                        {activeMenu === 'more' && (
+                            <motion.div 
+                                initial={{ opacity: 0, x: 20, scale: 0.95 }}
+                                animate={{ opacity: 1, x: 0, scale: 1 }}
+                                exit={{ opacity: 0, x: 20, scale: 0.95 }}
+                                className="absolute left-full top-0 ml-2 p-2 bg-surface border border-slate-700 rounded-xl shadow-2xl flex flex-col gap-2 min-w-[150px]"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <div className="text-xs font-bold text-slate-400 uppercase px-2">{translations[lang].moreTools}</div>
+                                <button 
+                                    onClick={() => setSettings(s => ({...s, snapToGrid: !s.snapToGrid}))}
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${settings.snapToGrid ? 'bg-primary text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                                >
+                                    <Magnet className="w-4 h-4" />
+                                    {translations[lang].snapToGrid}
+                                </button>
+                                <button 
+                                    onClick={() => setSettings(s => ({...s, keepAspectRatio: !s.keepAspectRatio}))}
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${settings.keepAspectRatio ? 'bg-primary text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                                >
+                                    <Scaling className="w-4 h-4" />
+                                    {translations[lang].keepAspectRatio}
+                                </button>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+                
+                {/* Group 4: Layers */}
+                <TooltipButton 
+                    ref={layersBtnRef}
+                    title={translations[lang].layers} 
+                    onClick={toggleLayerPanel} 
+                    active={showLayerPanel} 
+                    icon={Layers} 
+                />
+            </div>
+
+            {/* Layer Panel with Visibility Control */}
+            <AnimatePresence>
+                {showLayerPanel && (
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="fixed z-50 pointer-events-none"
+                        style={{ top: 0, left: 0, width: '100%', height: '100%' }}
+                    >
+                        <div className="pointer-events-auto">
+                           <LayerPanel 
+                                layers={layers}
+                                selectedIds={selectedIds}
+                                onSelect={(id, multi) => {
+                                    const newSet = multi ? new Set(selectedIds).add(id) : new Set([id]);
+                                    if (multi && selectedIds.has(id)) newSet.delete(id);
+                                    setSelectedIds(newSet);
+                                }}
+                                onReorder={reorderLayers}
+                                onClose={() => setShowLayerPanel(false)}
+                                lang={lang}
+                                initialPosition={layerPanelPos}
+                                initialAlignment={layerPanelAlign}
+                            />
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            
+            {/* Export Preview Modal */}
+            <AnimatePresence>
+                {exportPreviewUrl && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4"
+                        onClick={() => setExportPreviewUrl(null)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, y: 20 }}
+                            animate={{ scale: 1, y: 0 }}
+                            exit={{ scale: 0.9, y: 20 }}
+                            className="bg-surface border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-w-4xl w-full max-h-[90vh] flex flex-col"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800/50">
+                                <h3 className="text-lg font-bold text-white">{translations[lang].previewExport}</h3>
+                                <button onClick={() => setExportPreviewUrl(null)} className="p-1 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <div className="flex-1 overflow-auto p-4 bg-slate-950/50 flex items-center justify-center custom-scrollbar">
+                                <img src={exportPreviewUrl} alt="Export Preview" className="max-w-full max-h-[70vh] shadow-lg border border-slate-800" />
+                            </div>
+                            <div className="p-4 border-t border-slate-700 bg-slate-800/50 flex justify-end gap-3">
+                                <button 
+                                    onClick={() => setExportPreviewUrl(null)}
+                                    className="px-4 py-2 rounded-lg text-slate-300 hover:bg-slate-700 transition-colors font-medium text-sm"
+                                >
+                                    {translations[lang].close}
+                                </button>
+                                <button 
+                                    onClick={() => { downloadImage(exportPreviewUrl as string); setExportPreviewUrl(null); }}
+                                    className="px-6 py-2 rounded-lg bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 font-medium text-sm flex items-center gap-2"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    {translations[lang].download}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {contextMenu && (
+                <ContextMenu 
+                    x={contextMenu.x}
+                    y={contextMenu.y}
+                    onClose={() => setContextMenu(null)}
+                    onDelete={deleteSelected}
+                    onBringToFront={bringToFront}
+                    onSendToBack={sendToBack}
+                    onDownload={() => { 
+                        // Download single image
+                        const id = Array.from(selectedIds)[0]; 
+                        handleExportClick(id); 
+                    }}
+                    hasSelection={selectedIds.size > 0}
+                    lang={lang}
+                />
+            )}
+          </div>
+      </div>
+    </div>
+  );
+}
