@@ -27,6 +27,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onProcessFiles
 }) => {
   const [tab, setTab] = React.useState<'settings' | 'history'>('settings');
+  const [confirmGithub, setConfirmGithub] = React.useState(false);
   const t = translations[lang];
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -38,7 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onProcessFiles(Array.from(e.dataTransfer.files));
+      onProcessFiles(Array.from(e.target.files));
     }
   };
 
@@ -48,6 +49,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
     e.target.value = '';
   };
+
+  React.useEffect(() => {
+    const handleClickOutside = () => setConfirmGithub(false);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
 
   return (
     <div 
@@ -210,20 +217,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
                <span className="text-slate-300 font-medium">Arminosi</span>
            </div>
            
-           <a 
-              href="https://github.com/Arminosi/CollagePro" 
-              target="_blank" 
-              rel="noopener noreferrer"
+           <button 
               onClick={(e) => {
-                  if (!window.confirm(t.githubConfirm)) {
-                      e.preventDefault();
+                  e.stopPropagation();
+                  if (confirmGithub) {
+                      window.open('https://github.com/Arminosi/CollagePro', '_blank', 'noopener,noreferrer');
+                      setConfirmGithub(false);
+                  } else {
+                      setConfirmGithub(true);
                   }
               }}
-              className="flex items-center justify-center gap-2 px-3 py-1.5 bg-slate-900/50 hover:bg-slate-800 border border-slate-700/50 hover:border-slate-600 rounded-lg text-slate-400 hover:text-white transition-all text-xs font-medium group"
+              className={`flex items-center justify-center gap-2 px-3 py-1.5 border rounded-lg transition-all text-xs font-medium ${
+                  confirmGithub 
+                      ? 'bg-blue-600 hover:bg-blue-700 border-blue-500 text-white' 
+                      : 'bg-slate-900/50 hover:bg-slate-800 border-slate-700/50 hover:border-slate-600 text-slate-400 hover:text-white'
+              }`}
            >
-              <Github className="w-3.5 h-3.5 group-hover:text-white transition-colors" />
-              <span>GitHub</span>
-           </a>
+              <Github className={`w-3.5 h-3.5 ${confirmGithub ? 'text-white' : 'group-hover:text-white transition-colors'}`} />
+              <span>{confirmGithub ? (lang === 'zh' ? '确认？' : 'Confirm?') : 'GitHub'}</span>
+           </button>
         </div>
 
         <div className="w-full text-[9px] tracking-tighter text-slate-600 text-center whitespace-nowrap">
