@@ -21,6 +21,8 @@ export interface AppSettings {
   backgroundMode: 'grid' | 'solid';
   backgroundColor: string;
   previewBackground: boolean;
+  gridRows: number;
+  gridCols: number;
 }
 
 export interface DragState {

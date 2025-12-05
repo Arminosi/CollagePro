@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import React from 'react';
-import { Trash2, ArrowUp, ArrowDown, Download } from 'lucide-react';
+import { Trash2, ArrowUp, ArrowDown, Download, Maximize, Layers } from 'lucide-react';
 import { Language } from '../types';
 import { translations } from '../utils/i18n';
 
@@ -14,6 +14,8 @@ interface ContextMenuProps {
   onDownload: () => void;
   hasSelection: boolean;
   lang: Language;
+  onFitView?: () => void;
+  onSelectAll?: () => void;
 }
 
 export const ContextMenu: React.FC<ContextMenuProps> = ({
@@ -25,17 +27,18 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onSendToBack,
   onDownload,
   hasSelection,
-  lang
+  lang,
+  onFitView,
+  onSelectAll
 }) => {
   const t = translations[lang];
+  const [confirmSelectAll, setConfirmSelectAll] = React.useState(false);
 
   React.useEffect(() => {
     const handleClick = () => onClose();
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
   }, [onClose]);
-
-  if (!hasSelection) return null;
 
   return (
     <div
@@ -45,20 +48,74 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div className="flex flex-col py-1">
-        <button onClick={() => { onBringToFront(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
-          <ArrowUp className="w-4 h-4 mr-2" /> {t.bringToFront}
-        </button>
-        <button onClick={() => { onSendToBack(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
-          <ArrowDown className="w-4 h-4 mr-2" /> {t.sendToBack}
-        </button>
-        <div className="h-px bg-slate-700 my-1" />
-        <button onClick={() => { onDownload(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
-          <Download className="w-4 h-4 mr-2" /> {t.saveImage}
-        </button>
-        <div className="h-px bg-slate-700 my-1" />
-        <button onClick={() => { onDelete(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-red-900/50 text-red-400 text-left">
-          <Trash2 className="w-4 h-4 mr-2" /> {t.delete}
-        </button>
+        {hasSelection ? (
+          <>
+            <button onClick={() => { onBringToFront(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+              <ArrowUp className="w-4 h-4 mr-2" /> {t.bringToFront}
+            </button>
+            <button onClick={() => { onSendToBack(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+              <ArrowDown className="w-4 h-4 mr-2" /> {t.sendToBack}
+            </button>
+            <div className="h-px bg-slate-700 my-1" />
+            <button onClick={() => { onDownload(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+              <Download className="w-4 h-4 mr-2" /> {t.saveImage}
+            </button>
+            <div className="h-px bg-slate-700 my-1" />
+            {onFitView && (
+              <button onClick={() => { onFitView(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+                <Maximize className="w-4 h-4 mr-2" /> {t.fitView}
+              </button>
+            )}
+            {onSelectAll && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirmSelectAll) {
+                    onSelectAll();
+                    onClose();
+                    setConfirmSelectAll(false);
+                  } else {
+                    setConfirmSelectAll(true);
+                  }
+                }}
+                className={`flex items-center px-4 py-2 hover:bg-slate-700 text-left transition-colors ${confirmSelectAll ? 'bg-blue-900/50 text-blue-300' : ''}`}
+              >
+                <Layers className="w-4 h-4 mr-2" />
+                {confirmSelectAll ? (lang === 'zh' ? '确认全选？' : 'Confirm Select All?') : t.selectAll}
+              </button>
+            )}
+            <div className="h-px bg-slate-700 my-1" />
+            <button onClick={() => { onDelete(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-red-900/50 text-red-400 text-left">
+              <Trash2 className="w-4 h-4 mr-2" /> {t.delete}
+            </button>
+          </>
+        ) : (
+          <>
+            {onFitView && (
+              <button onClick={() => { onFitView(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+                <Maximize className="w-4 h-4 mr-2" /> {t.fitView}
+              </button>
+            )}
+            {onSelectAll && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirmSelectAll) {
+                    onSelectAll();
+                    onClose();
+                    setConfirmSelectAll(false);
+                  } else {
+                    setConfirmSelectAll(true);
+                  }
+                }}
+                className={`flex items-center px-4 py-2 hover:bg-slate-700 text-left transition-colors ${confirmSelectAll ? 'bg-blue-900/50 text-blue-300' : ''}`}
+              >
+                <Layers className="w-4 h-4 mr-2" />
+                {confirmSelectAll ? (lang === 'zh' ? '确认全选？' : 'Confirm Select All?') : t.selectAll}
+              </button>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

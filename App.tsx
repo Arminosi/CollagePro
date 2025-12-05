@@ -6,12 +6,12 @@ import { LayerPanel } from './components/LayerPanel';
 import { ContextMenu } from './components/ContextMenu';
 import { CanvasLayer, AppSettings, DragState, SavedVersion, Rect, Language } from './types';
 import { getSnapLines, resizeLayer, getSnapDelta } from './utils/geometry';
-import { 
-  Undo, Redo, Download, ZoomIn, ZoomOut, Maximize, Languages, 
+import {
+  Undo, Redo, Download, ZoomIn, ZoomOut, Maximize, Languages,
   Magnet, Scaling, Menu, LayoutGrid,
   AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignEndVertical, AlignVerticalJustifyCenter,
   AlignVerticalJustifyCenter as VStitchIcon, AlignHorizontalJustifyCenter as HStitchIcon, Wand2,
-  Layers, Combine, Info, MoreHorizontal, MousePointer, X
+  Layers, Combine, Info, MoreHorizontal, MousePointer, X, ChevronUp, ChevronDown, ArrowLeftRight
 } from 'lucide-react';
 import { translations } from './utils/i18n';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -23,10 +23,12 @@ const INITIAL_SETTINGS: AppSettings = {
   showGuides: true,
   stitchGap: 0,
   smartStitch: false,
-  stitchScope: 'selected',
+  stitchScope: 'all',
   backgroundMode: 'grid',
   backgroundColor: '#ffffff',
-  previewBackground: true
+  previewBackground: true,
+  gridRows: 2,
+  gridCols: 2
 };
 
 // --- Helper Components ---
@@ -70,7 +72,7 @@ const TooltipButton = React.forwardRef<HTMLButtonElement, TooltipButtonProps>(({
     {/* Tooltip */}
     {!disabled && (
         <div className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none
-        px-3 py-2 bg-slate-900 text-white text-xs font-medium rounded-lg border border-slate-700/50 whitespace-nowrap z-[60] shadow-xl
+        px-3 py-2 bg-slate-900 text-white text-xs font-medium rounded-lg border border-slate-700/50 whitespace-nowrap z-60 shadow-xl
         md:-top-14 md:left-1/2 md:-translate-x-1/2
         max-md:left-full max-md:ml-3 max-md:top-1/2 max-md:-translate-y-1/2
         ">
@@ -310,6 +312,87 @@ export default function App() {
     const others = layers.filter(l => !stitchedIds.has(l.id));
     const newAllLayers = [...others, ...finalStitched];
     
+    setLayers(newAllLayers);
+    pushHistory(newAllLayers);
+    setActiveMenu(null);
+  };
+
+  const handleGridLayout = () => {
+    if (layers.length === 0) return;
+
+    // Determine which layers to layout
+    let targetLayers: CanvasLayer[] = [];
+    if (settings.stitchScope === 'all') {
+        targetLayers = [...layers];
+    } else {
+        targetLayers = layers.filter(l => selectedIds.has(l.id));
+        if (targetLayers.length === 0) return;
+    }
+
+    const rows = settings.gridRows;
+    const cols = settings.gridCols;
+    const gap = Number(settings.stitchGap) || 0;
+
+    // Calculate the maximum cell size based on all images
+    let maxCellWidth = 0;
+    let maxCellHeight = 0;
+
+    targetLayers.forEach(layer => {
+        const aspectRatio = layer.width / layer.height;
+        // Assume a base size and calculate what would be needed
+        maxCellWidth = Math.max(maxCellWidth, layer.width);
+        maxCellHeight = Math.max(maxCellHeight, layer.height);
+    });
+
+    // Calculate grid starting position (center of viewport)
+    const viewportCenter = {
+        x: -pan.x + (window.innerWidth / 2) / zoom,
+        y: -pan.y + (window.innerHeight / 2) / zoom
+    };
+
+    const totalWidth = cols * maxCellWidth + (cols - 1) * gap;
+    const totalHeight = rows * maxCellHeight + (rows - 1) * gap;
+    const startX = viewportCenter.x - totalWidth / 2;
+    const startY = viewportCenter.y - totalHeight / 2;
+
+    const layoutIds = new Set(targetLayers.map(l => l.id));
+    const layouted = targetLayers.map((layer, index) => {
+        if (index >= rows * cols) return layer; // Skip if beyond grid capacity
+
+        const row = Math.floor(index / cols);
+        const col = index % cols;
+
+        const cellX = startX + col * (maxCellWidth + gap);
+        const cellY = startY + row * (maxCellHeight + gap);
+
+        // Calculate how to fit the image in the cell while maintaining aspect ratio
+        const aspectRatio = layer.width / layer.height;
+        let newWidth = maxCellWidth;
+        let newHeight = maxCellWidth / aspectRatio;
+
+        // If height exceeds cell height, scale by height instead
+        if (newHeight > maxCellHeight) {
+            newHeight = maxCellHeight;
+            newWidth = maxCellHeight * aspectRatio;
+        }
+
+        // Center the image in its cell
+        const offsetX = (maxCellWidth - newWidth) / 2;
+        const offsetY = (maxCellHeight - newHeight) / 2;
+
+        return {
+            ...layer,
+            x: cellX + offsetX,
+            y: cellY + offsetY,
+            width: newWidth,
+            height: newHeight
+        };
+    });
+
+    // Merge back into main layers list
+    const others = layers.filter(l => !layoutIds.has(l.id));
+    const newAllLayers = [...others, ...layouted];
+
     setLayers(newAllLayers);
     pushHistory(newAllLayers);
     setActiveMenu(null);
@@ -720,6 +803,16 @@ export default function App() {
       setLayers(newLayers);
       pushHistory(newLayers);
   };
+  const selectAllLayers = () => {
+      const allIds = new Set(layers.map((l: CanvasLayer) => l.id));
+      setSelectedIds(allIds);
+  };
+
+  const clearCanvas = () => {
+      setLayers([]);
+      setSelectedIds(new Set());
+      pushHistory([]);
+  };
 
   // --- Export Logic ---
   const generateExportUrl = async (singleLayerId?: string) => {
@@ -832,8 +925,8 @@ export default function App() {
       : '#0f172a';
 
   return (
-    <div 
-        className="flex flex-col h-[100dvh] bg-background overflow-hidden relative"
+    <div
+        className="flex flex-col h-dvh bg-background overflow-hidden relative"
         onDrop={handleDrop}
         onDragOver={handleDragOver}
     >
@@ -882,7 +975,7 @@ export default function App() {
       </div>
 
       <div className="flex-1 flex overflow-hidden relative">
-          <Sidebar 
+          <Sidebar
             settings={settings}
             updateSettings={(s) => setSettings(prev => ({...prev, ...s}))}
             versions={versions}
@@ -890,6 +983,7 @@ export default function App() {
             isOpen={isSidebarOpen}
             lang={lang}
             onProcessFiles={processFiles}
+            onClearCanvas={clearCanvas}
           />
 
           <div
@@ -1000,6 +1094,27 @@ export default function App() {
                     </div>
                 );
                 })}
+
+                {/* Dashed outline for obscured selected layers */}
+                {layers.map((layer, index) => {
+                const isSelected = selectedIds.has(layer.id);
+                const isObscured = isSelected && selectedIds.size > 1 && layers.slice(index + 1).some((upperLayer: CanvasLayer) => selectedIds.has(upperLayer.id));
+                if (!isObscured) return null;
+                return (
+                    <div
+                    key={`outline-${layer.id}`}
+                    style={{
+                        position: 'absolute',
+                        left: layer.x - 2,
+                        top: layer.y - 2,
+                        width: layer.width + 4,
+                        height: layer.height + 4,
+                        pointerEvents: 'none'
+                    }}
+                    className="border-2 border-dashed border-primary"
+                    />
+                );
+                })}
             </div>
 
             {/* Responsive Toolbar */}
@@ -1078,12 +1193,32 @@ export default function App() {
                                     {/* Gap Input */}
                                     <div className="flex items-center gap-2">
                                         <span className="text-sm text-slate-300 w-12">{translations[lang].gap}</span>
-                                        <input 
-                                            type="number" 
-                                            value={settings.stitchGap}
-                                            onChange={(e) => setSettings({...settings, stitchGap: Number(e.target.value)})}
-                                            className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:border-primary outline-none"
-                                        />
+                                        <div className="flex-1 relative">
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                value={settings.stitchGap}
+                                                onChange={(e) => setSettings({...settings, stitchGap: Math.max(0, Number(e.target.value))})}
+                                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 pr-7 text-sm text-white focus:border-primary outline-none"
+                                            />
+                                            <div className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-slate-700">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSettings({...settings, stitchGap: settings.stitchGap + 1})}
+                                                    className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
+                                                >
+                                                    <ChevronUp className="w-3 h-3 text-slate-400" />
+                                                </button>
+                                                <div className="h-px bg-slate-700" />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSettings({...settings, stitchGap: Math.max(0, settings.stitchGap - 1)})}
+                                                    className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
+                                                >
+                                                    <ChevronDown className="w-3 h-3 text-slate-400" />
+                                                </button>
+                                            </div>
+                                        </div>
                                         <span className="text-xs text-slate-500">{translations[lang].px}</span>
                                     </div>
 
@@ -1108,15 +1243,110 @@ export default function App() {
 
                                     <div className="h-px bg-slate-700/50" />
 
+                                    {/* Grid Layout Settings */}
+                                    <div className="flex flex-col gap-2">
+                                        <div className="text-[10px] text-slate-500 font-medium uppercase flex items-center gap-1">
+                                            {translations[lang].gridLayout}
+                                            <div className="group relative">
+                                                <Info className="w-3.5 h-3.5 text-slate-500 hover:text-slate-300 cursor-help" />
+                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-slate-900 p-2 rounded text-[10px] text-slate-300 border border-slate-700 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-xl">
+                                                    {translations[lang].gridDesc}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-end gap-2">
+                                            <div className="flex flex-col gap-1 flex-1">
+                                                <span className="text-[10px] text-slate-400">{translations[lang].gridRows}</span>
+                                                <div className="relative">
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        max="10"
+                                                        value={settings.gridRows}
+                                                        onChange={(e) => setSettings({...settings, gridRows: Math.max(1, Math.min(10, Number(e.target.value)))})}
+                                                        className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 pr-7 text-sm text-white focus:border-primary outline-none"
+                                                    />
+                                                    <div className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-slate-700">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setSettings({...settings, gridRows: Math.min(10, settings.gridRows + 1)})}
+                                                            className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
+                                                        >
+                                                            <ChevronUp className="w-3 h-3 text-slate-400" />
+                                                        </button>
+                                                        <div className="h-px bg-slate-700" />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setSettings({...settings, gridRows: Math.max(1, settings.gridRows - 1)})}
+                                                            className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
+                                                        >
+                                                            <ChevronDown className="w-3 h-3 text-slate-400" />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Swap Button */}
+                                            <button
+                                                type="button"
+                                                onClick={() => setSettings({...settings, gridRows: settings.gridCols, gridCols: settings.gridRows})}
+                                                className="p-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors flex items-center justify-center shrink-0"
+                                                title={translations[lang].swapRowsCols || (lang === 'zh' ? '交换行列' : 'Swap rows/cols')}
+                                            >
+                                                <ArrowLeftRight className="w-4 h-4 text-slate-400" />
+                                            </button>
+
+                                            <div className="flex flex-col gap-1 flex-1">
+                                                <span className="text-[10px] text-slate-400">{translations[lang].gridCols}</span>
+                                                <div className="relative">
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        max="10"
+                                                        value={settings.gridCols}
+                                                        onChange={(e) => setSettings({...settings, gridCols: Math.max(1, Math.min(10, Number(e.target.value)))})}
+                                                        className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 pr-7 text-sm text-white focus:border-primary outline-none"
+                                                    />
+                                                    <div className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-slate-700">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setSettings({...settings, gridCols: Math.min(10, settings.gridCols + 1)})}
+                                                            className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
+                                                        >
+                                                            <ChevronUp className="w-3 h-3 text-slate-400" />
+                                                        </button>
+                                                        <div className="h-px bg-slate-700" />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setSettings({...settings, gridCols: Math.max(1, settings.gridCols - 1)})}
+                                                            className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
+                                                        >
+                                                            <ChevronDown className="w-3 h-3 text-slate-400" />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => handleGridLayout()}
+                                            className="w-full flex items-center justify-center gap-2 p-2 bg-primary hover:bg-indigo-600 rounded-lg transition-colors text-sm text-white font-medium"
+                                        >
+                                            <LayoutGrid className="w-4 h-4" />
+                                            {translations[lang].gridLayout}
+                                        </button>
+                                    </div>
+
+                                    <div className="h-px bg-slate-700/50" />
+
                                     <div className="grid grid-cols-2 gap-2">
-                                        <button 
+                                        <button
                                             onClick={() => handleAutoStitch('vertical')}
                                             className="flex flex-col items-center gap-1 p-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors text-xs text-slate-300"
                                         >
                                             <VStitchIcon className="w-5 h-5" />
                                             {translations[lang].vertical}
                                         </button>
-                                        <button 
+                                        <button
                                             onClick={() => handleAutoStitch('horizontal')}
                                             className="flex flex-col items-center gap-1 p-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors text-xs text-slate-300"
                                         >
@@ -1267,7 +1497,7 @@ export default function App() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4"
+                        className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4"
                         onClick={() => setExportPreviewUrl(null)}
                     >
                         <motion.div
@@ -1307,20 +1537,22 @@ export default function App() {
             </AnimatePresence>
 
             {contextMenu && (
-                <ContextMenu 
+                <ContextMenu
                     x={contextMenu.x}
                     y={contextMenu.y}
                     onClose={() => setContextMenu(null)}
                     onDelete={deleteSelected}
                     onBringToFront={bringToFront}
                     onSendToBack={sendToBack}
-                    onDownload={() => { 
+                    onDownload={() => {
                         // Download single image
                         const id = Array.from(selectedIds)[0] as string;
-                        handleExportClick(id); 
+                        handleExportClick(id);
                     }}
                     hasSelection={selectedIds.size > 0}
                     lang={lang}
+                    onFitView={() => handleFitView()}
+                    onSelectAll={selectAllLayers}
                 />
             )}
           </div>

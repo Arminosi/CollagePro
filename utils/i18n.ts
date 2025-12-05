@@ -64,7 +64,14 @@ export const translations: Record<Language, Record<string, string>> = {
     fitView: "Fit to View",
     previewExport: "Export Preview",
     download: "Download",
-    close: "Close"
+    close: "Close",
+    gridLayout: "Grid Layout",
+    gridRows: "Rows",
+    gridCols: "Columns",
+    gridDesc: "Arrange images in a rectangular grid. Images maintain aspect ratio and fit within cells.",
+    selectAll: "Select All",
+    clearCanvas: "Clear Canvas",
+    clearCanvasConfirm: "Are you sure you want to clear all layers? This action cannot be undone."
   },
   zh: {
     tools: "工具箱",
@@ -128,6 +135,13 @@ export const translations: Record<Language, Record<string, string>> = {
     fitView: "适应窗口",
     previewExport: "导出预览",
     download: "下载",
-    close: "关闭"
+    close: "关闭",
+    gridLayout: "宫格布局",
+    gridRows: "行数",
+    gridCols: "列数",
+    gridDesc: "将图片排列为矩形网格。图片保持宽高比并适配单元格，超出数量的格子留空。",
+    selectAll: "全选图层",
+    clearCanvas: "清空画布",
+    clearCanvasConfirm: "确定要清空所有图层吗？此操作无法撤销。"
   }
 };
