@@ -103,7 +103,7 @@ export default function App() {
   const [versions, setVersions] = useState<SavedVersion[]>([]);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Mobile: closed by default, desktop: will open on first interaction
+  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth < 768); // Mobile: open by default, desktop: closed by default
   const [lang, setLang] = useState<Language>('zh');
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
@@ -857,7 +857,7 @@ export default function App() {
             if (Object.keys(initial).length > 1) {
                 // Calculate bounding box of all selected layers in their new positions
                 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                Object.values(initial).forEach((initRect) => {
+                Object.values(initial).forEach((initRect: Rect) => {
                     const tempX = initRect.x + dx;
                     const tempY = initRect.y + dy;
                     minX = Math.min(minX, tempX);
@@ -1454,25 +1454,15 @@ export default function App() {
                             icon={Combine} 
                         />
                         <AnimatePresence>
-                            {activeMenu === 'stitch' && (() => {
-                                // Calculate menu position to avoid overflow on mobile
-                                const isMobile = window.innerWidth < 768;
-                                const menuHeight = 600; // Approximate menu height
-                                const viewportHeight = window.innerHeight;
-                                const shouldFlipToTop = isMobile && viewportHeight < menuHeight + 100;
-
-                                return (
+                            {activeMenu === 'stitch' && (
                                 <motion.div
                                     initial={{ opacity: 0, scale: 0.95, y: 10 }}
                                     animate={{ opacity: 1, scale: 1, y: 0 }}
                                     exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                                    className={`absolute bg-surface border border-slate-700 rounded-xl shadow-xl p-3 w-64 z-50 flex flex-col gap-3
-                                        ${shouldFlipToTop
-                                            ? 'max-md:bottom-full max-md:mb-2 max-md:left-full max-md:ml-2'
-                                            : 'max-md:left-full max-md:top-0 max-md:ml-2'
-                                        }
-                                        md:bottom-full md:left-1/2 md:-translate-x-1/2 md:mb-3
-                                        max-md:max-h-[80vh] max-md:overflow-y-auto max-md:custom-scrollbar
+                                    className={`bg-surface border border-slate-700 rounded-xl shadow-xl p-3 z-50 flex flex-col gap-3 overflow-y-auto custom-scrollbar
+                                        absolute w-64 max-h-[calc(100vh-180px)]
+                                        md:bottom-full md:right-0 md:mb-3
+                                        max-md:left-full max-md:top-0 max-md:ml-2
                                     `}
                                     onClick={(e) => e.stopPropagation()}
                                 >
@@ -1750,8 +1740,7 @@ export default function App() {
                                         </button>
                                     </div>
                                 </motion.div>
-                                );
-                            })()}
+                            )}
                         </AnimatePresence>
                     </div>
 
