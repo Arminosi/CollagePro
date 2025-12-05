@@ -4,50 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>CollagePro</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              background: '#0f172a',
-              surface: '#1e293b',
-              primary: '#6366f1',
-            },
-            cursor: {
-              'nwse-resize': 'nwse-resize',
-              'nesw-resize': 'nesw-resize',
-            }
-          },
-        },
-      }
-    </script>
-    <style>
-      /* Hide scrollbar for clean UI */
-      ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-      }
-      ::-webkit-scrollbar-track {
-        background: #0f172a;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #334155;
-        border-radius: 4px;
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background: #475569;
-      }
-      
-      /* Utility for hiding scrollbar but keeping functionality */
-      .no-scrollbar::-webkit-scrollbar {
-          display: none;
-      }
-      .no-scrollbar {
-          -ms-overflow-style: none;
-          scrollbar-width: none;
-      }
-    </style>
   <script type="importmap">
 {
   "imports": {

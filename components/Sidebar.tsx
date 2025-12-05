@@ -1,8 +1,8 @@
 
 /// <reference lib="dom" />
 import React from 'react';
-import { 
-  Settings, Clock, Image as ImageIcon, RotateCcw, Upload, Grid, Github
+import {
+  Settings, Clock, Image as ImageIcon, RotateCcw, Upload, Grid, Github, Trash2
 } from 'lucide-react';
 import { AppSettings, SavedVersion, Language } from '../types';
 import { translations } from '../utils/i18n';
@@ -15,6 +15,7 @@ interface SidebarProps {
   isOpen: boolean;
   lang: Language;
   onProcessFiles: (files: File[]) => void;
+  onClearCanvas: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -24,10 +25,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLoadVersion,
   isOpen,
   lang,
-  onProcessFiles
+  onProcessFiles,
+  onClearCanvas
 }) => {
   const [tab, setTab] = React.useState<'settings' | 'history'>('settings');
   const [confirmGithub, setConfirmGithub] = React.useState(false);
+  const [confirmClear, setConfirmClear] = React.useState(false);
   const t = translations[lang];
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -51,16 +54,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   React.useEffect(() => {
-    const handleClickOutside = () => setConfirmGithub(false);
+    const handleClickOutside = () => {
+      setConfirmGithub(false);
+      setConfirmClear(false);
+    };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
   return (
-    <div 
+    <div
       className={`
-        bg-surface border-r border-slate-800 flex flex-col z-20 shrink-0
+        bg-surface border-r border-slate-800 flex flex-col shrink-0
         transition-[width,opacity] duration-300 ease-in-out overflow-hidden
+        md:z-20 max-md:z-50
         ${isOpen ? 'w-80 opacity-100' : 'w-0 opacity-0 border-r-0'}
       `}
     >
@@ -99,6 +106,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <input type="file" className="hidden" multiple accept="image/*" onChange={handleFileInput} />
                 </label>
             </div>
+
+            {/* Clear Canvas Button */}
+            <button
+                onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirmClear) {
+                        onClearCanvas();
+                        setConfirmClear(false);
+                    } else {
+                        setConfirmClear(true);
+                    }
+                }}
+                className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 border rounded-lg transition-all text-sm font-medium ${
+                    confirmClear
+                        ? 'bg-red-600 hover:bg-red-700 border-red-500 text-white'
+                        : 'bg-red-900/20 hover:bg-red-900/40 border-red-800/50 text-red-400 hover:text-red-300'
+                }`}
+            >
+                <Trash2 className="w-4 h-4" />
+                {confirmClear ? (lang === 'zh' ? '确认清空？' : 'Confirm Clear?') : t.clearCanvas}
+            </button>
 
             <div className="h-px bg-slate-800" />
 
