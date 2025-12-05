@@ -102,6 +102,7 @@ export default function App() {
   const [lang, setLang] = useState<Language>('zh');
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
   
   // UI States
   const [showLayerPanel, setShowLayerPanel] = useState(false);
@@ -111,25 +112,30 @@ export default function App() {
 
   // --- Refs ---
   const canvasRef = useRef<HTMLDivElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
   const layersBtnRef = useRef<HTMLButtonElement>(null);
   
   const dragState = useRef<{
     isDragging: boolean;
     isResizing: boolean;
     isPanning: boolean;
+    isSelecting: boolean;
     startX: number;
     startY: number;
     initialPan: { x: number; y: number };
     initialLayers: Record<string, { x: number; y: number; width: number; height: number }>;
+    selectionBox: { startX: number; startY: number; endX: number; endY: number } | null;
     handle?: string;
   }>({
     isDragging: false,
     isResizing: false,
     isPanning: false,
+    isSelecting: false,
     startX: 0,
     startY: 0,
     initialPan: { x: 0, y: 0 },
-    initialLayers: {}
+    initialLayers: {},
+    selectionBox: null
   });
   
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
@@ -422,6 +428,9 @@ export default function App() {
 
   const handlePointerDown = (e: React.PointerEvent, layerId?: string, handle?: string) => {
     if (e.button !== 0) return; 
+    if (e.pointerType === 'touch') {
+      e.preventDefault();
+    }
     e.stopPropagation();
     setActiveMenu(null);
     
@@ -444,7 +453,7 @@ export default function App() {
       const initialLayersMap: Record<string, Rect> = {};
       newSelectedIds.forEach(id => {
         const layer = layers.find(l => l.id === id);
-        if (layer) initialLayersMap[id] = { ...layer };
+        if (layer) initialLayersMap[id] = { x: layer.x, y: layer.y, width: layer.width, height: layer.height };
       });
 
       if (handle) {
@@ -456,17 +465,29 @@ export default function App() {
         dragState.current.initialLayers = initialLayersMap;
       }
     } else {
-        if (!e.shiftKey && !isBatchSelectMode) setSelectedIds(new Set());
-        dragState.current.isPanning = true;
-        dragState.current.startX = e.clientX;
-        dragState.current.startY = e.clientY;
-        dragState.current.initialPan = { ...pan };
+        if (isBatchSelectMode) {
+          dragState.current.isSelecting = true;
+          dragState.current.startX = e.clientX;
+          dragState.current.startY = e.clientY;
+          setSelectionBox({ startX: e.clientX, startY: e.clientY, endX: e.clientX, endY: e.clientY });
+        } else {
+          if (!e.shiftKey) setSelectedIds(new Set());
+          dragState.current.isPanning = true;
+          dragState.current.startX = e.clientX;
+          dragState.current.startY = e.clientY;
+          dragState.current.initialPan = { ...pan };
+        }
     }
     (e.target as Element).setPointerCapture(e.pointerId);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!dragState.current.isDragging && !dragState.current.isResizing && !dragState.current.isPanning) return;
+    if (!dragState.current.isDragging && !dragState.current.isResizing && !dragState.current.isPanning && !dragState.current.isSelecting) return;
+    
+    if (dragState.current.isSelecting) {
+      setSelectionBox(prev => prev ? { ...prev, endX: e.clientX, endY: e.clientY } : null);
+      return;
+    }
     
     if (dragState.current.isPanning) {
         const dx = e.clientX - dragState.current.startX;
@@ -551,11 +572,31 @@ export default function App() {
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
+    if (dragState.current.isSelecting && selectionBox) {
+      const box = selectionBox;
+      const canvasStart = getCanvasCoordinates({ clientX: box.startX, clientY: box.startY } as any);
+      const canvasEnd = getCanvasCoordinates({ clientX: box.endX, clientY: box.endY } as any);
+      const minX = Math.min(canvasStart.x, canvasEnd.x);
+      const maxX = Math.max(canvasStart.x, canvasEnd.x);
+      const minY = Math.min(canvasStart.y, canvasEnd.y);
+      const maxY = Math.max(canvasStart.y, canvasEnd.y);
+      
+      const selectedLayers = layers.filter(layer =>
+        layer.x < maxX && layer.x + layer.width > minX &&
+        layer.y < maxY && layer.y + layer.height > minY
+      );
+      
+      const newSelectedIds = new Set(selectedIds);
+      selectedLayers.forEach(layer => newSelectedIds.add(layer.id));
+      setSelectedIds(newSelectedIds);
+    }
+    
     if (dragState.current.isDragging || dragState.current.isResizing) pushHistory(layers);
     dragState.current = { 
-        isDragging: false, isResizing: false, isPanning: false,
-        startX: 0, startY: 0, initialPan: { x: 0, y: 0}, initialLayers: {} 
+        isDragging: false, isResizing: false, isPanning: false, isSelecting: false,
+        startX: 0, startY: 0, initialPan: { x: 0, y: 0}, initialLayers: {}, selectionBox: null
     };
+    setSelectionBox(null);
     (e.target as Element).releasePointerCapture(e.pointerId);
   };
   
@@ -768,10 +809,12 @@ export default function App() {
           />
 
           <div 
+            ref={canvasContainerRef}
             className="flex-1 overflow-hidden relative flex flex-col shadow-inner"
             style={{ 
                 backgroundColor: backgroundStyle,
-                cursor: dragState.current.isPanning ? 'grabbing' : 'grab'
+                cursor: isBatchSelectMode ? 'crosshair' : (dragState.current.isPanning ? 'grabbing' : 'grab'),
+                touchAction: 'none'
             }}
             onPointerDown={(e) => handlePointerDown(e)}
             onPointerMove={handlePointerMove}
@@ -805,6 +848,27 @@ export default function App() {
                     }}
                 />
             )}
+
+            {/* Selection Box */}
+            {selectionBox && (() => {
+                const containerRect = canvasContainerRef.current?.getBoundingClientRect();
+                if (!containerRect) return null;
+                const box = selectionBox;
+                return (
+                    <div
+                        className="absolute pointer-events-none z-20"
+                        style={{
+                            left: Math.min(box.startX, box.endX) - containerRect.left,
+                            top: Math.min(box.startY, box.endY) - containerRect.top,
+                            width: Math.abs(box.endX - box.startX),
+                            height: Math.abs(box.endY - box.startY),
+                            border: '4px dashed #3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                            boxShadow: '0 0 20px rgba(59, 130, 246, 0.8), inset 0 0 20px rgba(59, 130, 246, 0.3)'
+                        }}
+                    />
+                );
+            })()}
 
             {/* Canvas Transform */}
             <div ref={canvasRef} className="absolute origin-top-left will-change-transform"
@@ -1074,7 +1138,7 @@ export default function App() {
                            <LayerPanel 
                                 layers={layers}
                                 selectedIds={selectedIds}
-                                onSelect={(id, multi) => {
+                                onSelect={(id: string, multi: boolean) => {
                                     const newSet = multi ? new Set(selectedIds).add(id) : new Set([id]);
                                     if (multi && selectedIds.has(id)) newSet.delete(id);
                                     setSelectedIds(newSet);
