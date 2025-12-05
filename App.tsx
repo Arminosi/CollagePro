@@ -5,7 +5,7 @@ import { Sidebar } from './components/Sidebar';
 import { LayerPanel } from './components/LayerPanel';
 import { ContextMenu } from './components/ContextMenu';
 import { CanvasLayer, AppSettings, DragState, SavedVersion, Rect, Language } from './types';
-import { getSnapLines, resizeLayer, getSnapDelta } from './utils/geometry';
+import { getSnapLines, resizeLayer, getSnapDelta, SnapGuide } from './utils/geometry';
 import {
   Undo, Redo, Download, ZoomIn, ZoomOut, Maximize, Languages,
   Magnet, Scaling, Menu, LayoutGrid,
@@ -28,7 +28,10 @@ const INITIAL_SETTINGS: AppSettings = {
   backgroundColor: '#ffffff',
   previewBackground: true,
   gridRows: 2,
-  gridCols: 2
+  gridCols: 2,
+  autoCalcGrid: true,
+  gridDirection: 'horizontal',
+  gridReverse: false
 };
 
 // --- Helper Components ---
@@ -100,11 +103,12 @@ export default function App() {
   const [versions, setVersions] = useState<SavedVersion[]>([]);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth > 768);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Mobile: closed by default, desktop: will open on first interaction
   const [lang, setLang] = useState<Language>('zh');
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   
   // UI States
   const [showLayerPanel, setShowLayerPanel] = useState(false);
@@ -123,12 +127,14 @@ export default function App() {
     isPanning: boolean;
     isSelecting: boolean;
     isPinching: boolean;
+    hasMoved: boolean;
     startX: number;
     startY: number;
     initialPan: { x: number; y: number };
     initialLayers: Record<string, { x: number; y: number; width: number; height: number }>;
     selectionBox: { startX: number; startY: number; endX: number; endY: number } | null;
     handle?: string;
+    clickedLayerId?: string;
     pinchStartDistance: number;
     pinchStartZoom: number;
     pinchCenter: { x: number; y: number };
@@ -138,6 +144,7 @@ export default function App() {
     isPanning: false,
     isSelecting: false,
     isPinching: false,
+    hasMoved: false,
     startX: 0,
     startY: 0,
     initialPan: { x: 0, y: 0 },
@@ -176,10 +183,18 @@ export default function App() {
 
   // --- Image Handling ---
   const processFiles = (files: File[]) => {
+      // Remember if this is the first import (canvas is empty)
+      const isFirstImport = layers.length === 0;
+
+      // Sort files by name in ascending order before processing
+      const sortedFiles = Array.from(files).sort((a, b) =>
+          a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+      );
+
       let loadedCount = 0;
       const newLayers: CanvasLayer[] = [];
 
-      files.forEach((file) => {
+      sortedFiles.forEach((file) => {
         const reader = new FileReader();
         reader.onload = (ev) => {
           const img = new Image();
@@ -187,7 +202,7 @@ export default function App() {
             const count = layers.length + loadedCount;
             const aspectRatio = img.width / img.height;
             const baseSize = 300;
-            
+
             const viewportCenter = {
                 x: -pan.x + (window.innerWidth / 2) / zoom,
                 y: -pan.y + (window.innerHeight / 2) / zoom
@@ -205,11 +220,57 @@ export default function App() {
             });
 
             loadedCount++;
-            if (loadedCount === files.length) {
-              const updatedLayers = [...layers, ...newLayers];
+            if (loadedCount === sortedFiles.length) {
+              // Sort new layers by name before adding them
+              const sortedNewLayers = newLayers.sort((a, b) => {
+                const nameA = (a.name || '').toLowerCase();
+                const nameB = (b.name || '').toLowerCase();
+                return nameA.localeCompare(nameB);
+              });
+
+              let updatedLayers = [...layers, ...sortedNewLayers];
+
+              // If this is the first import, sort all layers by name (ascending)
+              if (isFirstImport) {
+                updatedLayers = updatedLayers.sort((a, b) => {
+                  const nameA = (a.name || '').toLowerCase();
+                  const nameB = (b.name || '').toLowerCase();
+                  return nameA.localeCompare(nameB);
+                });
+              }
+
+              // Update zIndex to match array order
+              updatedLayers = updatedLayers.map((layer, index) => ({
+                ...layer,
+                zIndex: index
+              }));
+
               setLayers(updatedLayers);
               pushHistory(updatedLayers);
-              
+
+              // Auto calculate grid layout dimensions (prefer more rows than columns)
+              const totalImages = updatedLayers.length;
+              if (totalImages > 0) {
+                // Calculate optimal rows and columns, preferring vertical (more rows)
+                // Start with square root and adjust to prefer taller grids
+                const sqrt = Math.sqrt(totalImages);
+                let cols = Math.floor(sqrt);
+                let rows = Math.ceil(totalImages / cols);
+
+                // If it's close to square, prefer more rows
+                // For example: 6 images -> 3x2 instead of 2x3
+                if (cols * rows >= totalImages && rows <= cols) {
+                  // Swap to make it taller
+                  [rows, cols] = [cols, rows];
+                }
+
+                // Ensure we don't exceed max of 10
+                rows = Math.min(10, rows);
+                cols = Math.min(10, cols);
+
+                setSettings((prev: AppSettings) => ({...prev, gridRows: rows, gridCols: cols}));
+              }
+
               // Auto hide sidebar and fit view
               if (isSidebarOpen) {
                   setIsSidebarOpen(false);
@@ -240,24 +301,21 @@ export default function App() {
   // --- Logic for Auto Stitching & Alignment ---
   const handleAutoStitch = (direction: 'vertical' | 'horizontal') => {
     if (layers.length === 0) return;
-    
+
     // Determine which layers to stitch based on scope setting
+    // Use reversed order to match visual order in LayerPanel (top to bottom)
     let targetLayers: CanvasLayer[] = [];
     if (settings.stitchScope === 'all') {
-        targetLayers = [...layers];
+        targetLayers = [...layers].reverse();
     } else {
-        targetLayers = layers.filter(l => selectedIds.has(l.id));
+        targetLayers = layers.filter(l => selectedIds.has(l.id)).reverse();
         if (targetLayers.length < 2) {
              if (targetLayers.length === 0) return;
         }
     }
 
-    // Sort layers based on direction
-    if (direction === 'vertical') {
-      targetLayers.sort((a, b) => a.y - b.y);
-    } else {
-      targetLayers.sort((a, b) => a.x - b.x);
-    }
+    // Note: We now use layer order (visual order from LayerPanel) instead of sorting by position
+    // This gives users predictable control over stitch order through layer reordering
 
     const first = targetLayers[0];
     const alignPos = direction === 'vertical' ? first.x : first.y;
@@ -268,8 +326,6 @@ export default function App() {
         else referenceDimension = first.height;
     }
 
-    const stitchedIds = new Set(targetLayers.map(l => l.id));
-    
     const processedStitched = targetLayers.map((layer, index) => {
       let newLayer = { ...layer };
       
@@ -308,10 +364,12 @@ export default function App() {
         return l;
     });
 
-    // Merge back into main layers list
-    const others = layers.filter(l => !stitchedIds.has(l.id));
-    const newAllLayers = [...others, ...finalStitched];
-    
+    // Merge back into main layers list, preserving original layer order
+    const stitchedMap = new Map(finalStitched.map(l => [l.id, l]));
+    const newAllLayers = layers.map((layer: CanvasLayer) =>
+        stitchedMap.has(layer.id) ? stitchedMap.get(layer.id)! : layer
+    );
+
     setLayers(newAllLayers);
     pushHistory(newAllLayers);
     setActiveMenu(null);
@@ -321,28 +379,56 @@ export default function App() {
     if (layers.length === 0) return;
 
     // Determine which layers to layout
+    // Use reversed order to match visual order in LayerPanel (top to bottom)
     let targetLayers: CanvasLayer[] = [];
     if (settings.stitchScope === 'all') {
-        targetLayers = [...layers];
+        targetLayers = [...layers].reverse();
     } else {
-        targetLayers = layers.filter(l => selectedIds.has(l.id));
+        targetLayers = layers.filter(l => selectedIds.has(l.id)).reverse();
         if (targetLayers.length === 0) return;
     }
 
-    const rows = settings.gridRows;
-    const cols = settings.gridCols;
+    // Apply reverse order if gridReverse is enabled
+    if (settings.gridReverse) {
+        targetLayers = [...targetLayers].reverse();
+    }
+
+    const rows = typeof settings.gridRows === 'number' ? settings.gridRows : 2;
+    const cols = typeof settings.gridCols === 'number' ? settings.gridCols : 2;
     const gap = Number(settings.stitchGap) || 0;
+    const direction = settings.gridDirection;
 
-    // Calculate the maximum cell size based on all images
-    let maxCellWidth = 0;
-    let maxCellHeight = 0;
+    // First pass: determine the width for each column and height for each row
+    // We need to iterate through layers in order and map them to their grid positions
 
-    targetLayers.forEach(layer => {
-        const aspectRatio = layer.width / layer.height;
-        // Assume a base size and calculate what would be needed
-        maxCellWidth = Math.max(maxCellWidth, layer.width);
-        maxCellHeight = Math.max(maxCellHeight, layer.height);
+    // Initialize arrays for column widths and row heights
+    const colWidths: number[] = new Array(cols).fill(0);
+    const rowHeights: number[] = new Array(rows).fill(0);
+
+    // Map each layer to its grid position and update max dimensions
+    targetLayers.forEach((layer, index) => {
+        if (index >= rows * cols) return; // Skip if beyond grid capacity
+
+        let row: number, col: number;
+        if (direction === 'horizontal') {
+            // Horizontal first: fill left to right, then top to bottom
+            row = Math.floor(index / cols);
+            col = index % cols;
+        } else {
+            // Vertical first: fill top to bottom, then left to right
+            col = Math.floor(index / rows);
+            row = index % rows;
+        }
+
+        // Update maximum width for this column
+        colWidths[col] = Math.max(colWidths[col], layer.width);
+        // Update maximum height for this row
+        rowHeights[row] = Math.max(rowHeights[row], layer.height);
     });
+
+    // Calculate total dimensions
+    const totalWidth = colWidths.reduce((sum, w) => sum + w, 0) + (cols - 1) * gap;
+    const totalHeight = rowHeights.reduce((sum, h) => sum + h, 0) + (rows - 1) * gap;
 
     // Calculate grid starting position (center of viewport)
     const viewportCenter = {
@@ -350,35 +436,45 @@ export default function App() {
         y: -pan.y + (window.innerHeight / 2) / zoom
     };
 
-    const totalWidth = cols * maxCellWidth + (cols - 1) * gap;
-    const totalHeight = rows * maxCellHeight + (rows - 1) * gap;
     const startX = viewportCenter.x - totalWidth / 2;
     const startY = viewportCenter.y - totalHeight / 2;
 
-    const layoutIds = new Set(targetLayers.map(l => l.id));
     const layouted = targetLayers.map((layer, index) => {
         if (index >= rows * cols) return layer; // Skip if beyond grid capacity
 
-        const row = Math.floor(index / cols);
-        const col = index % cols;
+        // Calculate row and col based on direction
+        let row: number, col: number;
+        if (direction === 'horizontal') {
+            // Horizontal first: fill left to right, then top to bottom
+            row = Math.floor(index / cols);
+            col = index % cols;
+        } else {
+            // Vertical first: fill top to bottom, then left to right
+            col = Math.floor(index / rows);
+            row = index % rows;
+        }
 
-        const cellX = startX + col * (maxCellWidth + gap);
-        const cellY = startY + row * (maxCellHeight + gap);
+        // Calculate cell position
+        const cellX = startX + colWidths.slice(0, col).reduce((sum, w) => sum + w, 0) + col * gap;
+        const cellY = startY + rowHeights.slice(0, row).reduce((sum, h) => sum + h, 0) + row * gap;
+
+        const cellWidth = colWidths[col];
+        const cellHeight = rowHeights[row];
 
         // Calculate how to fit the image in the cell while maintaining aspect ratio
         const aspectRatio = layer.width / layer.height;
-        let newWidth = maxCellWidth;
-        let newHeight = maxCellWidth / aspectRatio;
+        let newWidth = cellWidth;
+        let newHeight = cellWidth / aspectRatio;
 
         // If height exceeds cell height, scale by height instead
-        if (newHeight > maxCellHeight) {
-            newHeight = maxCellHeight;
-            newWidth = maxCellHeight * aspectRatio;
+        if (newHeight > cellHeight) {
+            newHeight = cellHeight;
+            newWidth = cellHeight * aspectRatio;
         }
 
         // Center the image in its cell
-        const offsetX = (maxCellWidth - newWidth) / 2;
-        const offsetY = (maxCellHeight - newHeight) / 2;
+        const offsetX = (cellWidth - newWidth) / 2;
+        const offsetY = (cellHeight - newHeight) / 2;
 
         return {
             ...layer,
@@ -389,13 +485,65 @@ export default function App() {
         };
     });
 
-    // Merge back into main layers list
-    const others = layers.filter(l => !layoutIds.has(l.id));
-    const newAllLayers = [...others, ...layouted];
+    // Merge back into main layers list, preserving original layer order
+    // Create a map for quick lookup of layouted layers
+    const layoutedMap = new Map(layouted.map(l => [l.id, l]));
+
+    // Update layers in their original positions
+    const newAllLayers = layers.map((layer: CanvasLayer) =>
+        layoutedMap.has(layer.id) ? layoutedMap.get(layer.id)! : layer
+    );
 
     setLayers(newAllLayers);
     pushHistory(newAllLayers);
     setActiveMenu(null);
+  };
+
+  // Helper function to calculate grid dimensions based on total images
+  const calculateGridDimension = (totalImages: number, knownDimension: number, isRows: boolean): number => {
+    if (totalImages === 0 || knownDimension === 0) return 1;
+
+    if (isRows) {
+      // Known dimension is rows, calculate cols
+      return Math.ceil(totalImages / knownDimension);
+    } else {
+      // Known dimension is cols, calculate rows
+      return Math.ceil(totalImages / knownDimension);
+    }
+  };
+
+  const handleGridRowsChange = (newRows: number | '') => {
+    if (newRows === '') return;
+    const validRows = Math.max(1, Math.min(10, newRows));
+
+    if (settings.autoCalcGrid) {
+      // Auto-calculate columns based on total image count
+      const totalImages = settings.stitchScope === 'all'
+        ? layers.length
+        : layers.filter(l => selectedIds.has(l.id)).length;
+
+      const newCols = calculateGridDimension(totalImages, validRows, true);
+      setSettings({...settings, gridRows: validRows, gridCols: Math.min(10, newCols)});
+    } else {
+      setSettings({...settings, gridRows: validRows});
+    }
+  };
+
+  const handleGridColsChange = (newCols: number | '') => {
+    if (newCols === '') return;
+    const validCols = Math.max(1, Math.min(10, newCols));
+
+    if (settings.autoCalcGrid) {
+      // Auto-calculate rows based on total image count
+      const totalImages = settings.stitchScope === 'all'
+        ? layers.length
+        : layers.filter(l => selectedIds.has(l.id)).length;
+
+      const newRows = calculateGridDimension(totalImages, validCols, false);
+      setSettings({...settings, gridCols: validCols, gridRows: Math.min(10, newRows)});
+    } else {
+      setSettings({...settings, gridCols: validCols});
+    }
   };
 
   const handleAlign = (type: 'left' | 'center-h' | 'right' | 'top' | 'middle-v' | 'bottom') => {
@@ -403,6 +551,7 @@ export default function App() {
       const targetLayers = layers.filter(l => selectedIds.has(l.id));
       if (targetLayers.length === 0) return;
 
+      // Calculate current bounding box of all selected layers
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
       targetLayers.forEach(l => {
           minX = Math.min(minX, l.x);
@@ -414,18 +563,25 @@ export default function App() {
       const centerX = (minX + maxX) / 2;
       const centerY = (minY + maxY) / 2;
 
-      const aligned = targetLayers.map(l => {
-          const newL = { ...l };
-          switch(type) {
-              case 'left': newL.x = minX; break;
-              case 'center-h': newL.x = centerX - (l.width / 2); break;
-              case 'right': newL.x = maxX - l.width; break;
-              case 'top': newL.y = minY; break;
-              case 'middle-v': newL.y = centerY - (l.height / 2); break;
-              case 'bottom': newL.y = maxY - l.height; break;
-          }
-          return newL;
-      });
+      // Calculate offset to move the entire group
+      let offsetX = 0;
+      let offsetY = 0;
+
+      switch(type) {
+          case 'left': offsetX = -minX; break;
+          case 'center-h': offsetX = -centerX; break;
+          case 'right': offsetX = -minX; break; // Will align to right edge of group, keeping internal spacing
+          case 'top': offsetY = -minY; break;
+          case 'middle-v': offsetY = -centerY; break;
+          case 'bottom': offsetY = -minY; break; // Will align to bottom edge of group, keeping internal spacing
+      }
+
+      // Move all selected layers by the same offset, preserving their relative positions
+      const aligned = targetLayers.map((l: CanvasLayer) => ({
+          ...l,
+          x: l.x + offsetX,
+          y: l.y + offsetY
+      }));
 
       const finalLayers = layers.map(l => {
           if (selectedIds.has(l.id)) return aligned.find(a => a.id === l.id) || l;
@@ -537,13 +693,27 @@ export default function App() {
   };
 
   const handlePointerDown = (e: React.PointerEvent, layerId?: string, handle?: string) => {
-    if (e.button !== 0) return; 
+    // Middle mouse button (button 1) for panning canvas
+    if (e.button === 1) {
+      e.preventDefault();
+      e.stopPropagation();
+      dragState.current.isPanning = true;
+      dragState.current.startX = e.clientX;
+      dragState.current.startY = e.clientY;
+      dragState.current.initialPan = { ...pan };
+      (e.target as Element).setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // Only handle left mouse button (button 0) for layer interactions
+    if (e.button !== 0) return;
+
     if (e.pointerType === 'touch') {
       e.preventDefault();
     }
     e.stopPropagation();
     setActiveMenu(null);
-    
+
     if (layerId) {
       const coords = getCanvasCoordinates(e);
       dragState.current.startX = coords.x;
@@ -553,12 +723,19 @@ export default function App() {
       const isMultiSelect = e.shiftKey || isBatchSelectMode;
 
       if (isMultiSelect) {
-        if (newSelectedIds.has(layerId)) newSelectedIds.delete(layerId);
-        else newSelectedIds.add(layerId);
+        // In batch select mode, if clicking on already selected layer, don't toggle yet
+        // We'll handle toggle in pointerUp if no drag occurred
+        if (!newSelectedIds.has(layerId)) {
+          newSelectedIds.add(layerId);
+          setSelectedIds(newSelectedIds);
+        }
+        // Store the clicked layer ID for potential toggle on pointer up
+        dragState.current.clickedLayerId = layerId;
       } else {
-        if (!newSelectedIds.has(layerId)) newSelectedIds = new Set([layerId]);
+        // In single select mode, always set selection to only the clicked layer
+        newSelectedIds = new Set([layerId]);
+        setSelectedIds(newSelectedIds);
       }
-      setSelectedIds(newSelectedIds);
 
       const initialLayersMap: Record<string, Rect> = {};
       newSelectedIds.forEach(id => {
@@ -593,12 +770,12 @@ export default function App() {
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!dragState.current.isDragging && !dragState.current.isResizing && !dragState.current.isPanning && !dragState.current.isSelecting) return;
-    
+
     if (dragState.current.isSelecting) {
       setSelectionBox(prev => prev ? { ...prev, endX: e.clientX, endY: e.clientY } : null);
       return;
     }
-    
+
     if (dragState.current.isPanning) {
         const dx = e.clientX - dragState.current.startX;
         const dy = e.clientY - dragState.current.startY;
@@ -612,6 +789,13 @@ export default function App() {
     const coords = getCanvasCoordinates(e);
     const dx = coords.x - dragState.current.startX;
     const dy = coords.y - dragState.current.startY;
+
+    // Check if moved beyond threshold (3 pixels in canvas space)
+    const moveThreshold = 3 / zoom;
+    if (!dragState.current.hasMoved && (Math.abs(dx) > moveThreshold || Math.abs(dy) > moveThreshold)) {
+      dragState.current.hasMoved = true;
+    }
+
     const initial = dragState.current.initialLayers;
     const scaledThreshold = settings.snapThreshold / zoom;
 
@@ -668,12 +852,42 @@ export default function App() {
 
         if (settings.snapToGrid && Object.keys(initial).length > 0) {
             const otherRects = layers.filter(other => !initial[other.id]).map(o => ({x: o.x, y: o.y, width: o.width, height: o.height}));
-            const snap = getSnapLines(
-                { x: newX, y: newY, width: init.width, height: init.height }, 
-                otherRects, 5000, 5000, scaledThreshold
-            );
-            if (snap.x !== null) newX += snap.x;
-            if (snap.y !== null) newY += snap.y;
+
+            // When moving multiple layers, calculate snap based on the bounding box of the entire selection
+            if (Object.keys(initial).length > 1) {
+                // Calculate bounding box of all selected layers in their new positions
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                Object.values(initial).forEach((initRect) => {
+                    const tempX = initRect.x + dx;
+                    const tempY = initRect.y + dy;
+                    minX = Math.min(minX, tempX);
+                    minY = Math.min(minY, tempY);
+                    maxX = Math.max(maxX, tempX + initRect.width);
+                    maxY = Math.max(maxY, tempY + initRect.height);
+                });
+
+                // Calculate snap for the bounding box (only once for the entire group)
+                const groupRect = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+                const snapResult = getSnapLines(groupRect, otherRects, 5000, 5000, scaledThreshold);
+
+                // Apply the same snap offset to all layers in the group
+                if (snapResult.x !== null) newX += snapResult.x;
+                if (snapResult.y !== null) newY += snapResult.y;
+
+                // Update snap guides
+                setSnapGuides(snapResult.guides);
+            } else {
+                // Single layer: calculate snap normally
+                const snapResult = getSnapLines(
+                    { x: newX, y: newY, width: init.width, height: init.height },
+                    otherRects, 5000, 5000, scaledThreshold
+                );
+                if (snapResult.x !== null) newX += snapResult.x;
+                if (snapResult.y !== null) newY += snapResult.y;
+
+                // Update snap guides
+                setSnapGuides(snapResult.guides);
+            }
         }
         return { ...l, x: newX, y: newY };
       }
@@ -690,24 +904,36 @@ export default function App() {
       const maxX = Math.max(canvasStart.x, canvasEnd.x);
       const minY = Math.min(canvasStart.y, canvasEnd.y);
       const maxY = Math.max(canvasStart.y, canvasEnd.y);
-      
+
       const selectedLayers = layers.filter(layer =>
         layer.x < maxX && layer.x + layer.width > minX &&
         layer.y < maxY && layer.y + layer.height > minY
       );
-      
+
       const newSelectedIds = new Set(selectedIds);
       selectedLayers.forEach(layer => newSelectedIds.add(layer.id));
       setSelectedIds(newSelectedIds);
     }
-    
+
+    // Handle toggle for batch select mode when clicking (not dragging) on already selected layer
+    // Only toggle if the user didn't actually drag (no significant movement)
+    if (dragState.current.clickedLayerId && !dragState.current.hasMoved && isBatchSelectMode) {
+      const clickedId = dragState.current.clickedLayerId;
+      if (selectedIds.has(clickedId)) {
+        const newSelectedIds = new Set(selectedIds);
+        newSelectedIds.delete(clickedId);
+        setSelectedIds(newSelectedIds);
+      }
+    }
+
     if (dragState.current.isDragging || dragState.current.isResizing) pushHistory(layers);
     dragState.current = {
-        isDragging: false, isResizing: false, isPanning: false, isSelecting: false, isPinching: false,
+        isDragging: false, isResizing: false, isPanning: false, isSelecting: false, isPinching: false, hasMoved: false,
         startX: 0, startY: 0, initialPan: { x: 0, y: 0}, initialLayers: {}, selectionBox: null,
         pinchStartDistance: 0, pinchStartZoom: 1, pinchCenter: { x: 0, y: 0 }
     };
     setSelectionBox(null);
+    setSnapGuides([]); // Clear snap guides when releasing
     (e.target as Element).releasePointerCapture(e.pointerId);
   };
 
@@ -787,6 +1013,31 @@ export default function App() {
     setSelectedIds(new Set());
     pushHistory(newLayers);
   };
+
+  const duplicateLayer = (layerId: string) => {
+    const layerToDuplicate = layers.find(l => l.id === layerId);
+    if (!layerToDuplicate) return;
+
+    const newLayer: CanvasLayer = {
+      ...layerToDuplicate,
+      id: Math.random().toString(36).substr(2, 9),
+      x: layerToDuplicate.x + 20,
+      y: layerToDuplicate.y + 20,
+      name: layerToDuplicate.name ? `${layerToDuplicate.name} (copy)` : 'Layer (copy)'
+    };
+
+    const newLayers = [...layers, newLayer];
+    setLayers(newLayers);
+    pushHistory(newLayers);
+  };
+
+  const deleteLayers = (layerIds: string[]) => {
+    const newLayers = layers.filter(l => !layerIds.includes(l.id));
+    setLayers(newLayers);
+    setSelectedIds(new Set());
+    pushHistory(newLayers);
+  };
+
   const bringToFront = () => {
     const selected = layers.filter(l => selectedIds.has(l.id));
     const unselected = layers.filter(l => !selectedIds.has(l.id));
@@ -900,11 +1151,27 @@ export default function App() {
 
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
+          // Check if user is typing in an input or textarea
+          const target = e.target as HTMLElement;
+          const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+          // Ctrl+Z / Cmd+Z for undo/redo
           if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
               e.preventDefault();
               if (e.shiftKey) redo(); else undo();
           }
-          if (e.key === 'Delete' || e.key === 'Backspace') {
+          // Ctrl+D / Cmd+D for deselect all
+          if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
+              e.preventDefault();
+              setSelectedIds(new Set());
+          }
+          // V key to toggle batch select mode
+          if (e.key === 'v' && !isInputField && !e.ctrlKey && !e.metaKey) {
+              e.preventDefault();
+              setIsBatchSelectMode((prev: boolean) => !prev);
+          }
+          // Delete/Backspace to delete selected layers
+          if ((e.key === 'Delete' || e.key === 'Backspace') && !isInputField) {
               if (selectedIds.size > 0) deleteSelected();
           }
       };
@@ -917,6 +1184,19 @@ export default function App() {
     const handleClickOutside = () => setActiveMenu(null);
     window.addEventListener('click', handleClickOutside);
     return () => window.removeEventListener('click', handleClickOutside);
+  }, []);
+
+  // Prevent browser zoom on Ctrl+Wheel globally
+  useEffect(() => {
+    const preventBrowserZoom = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+
+    // Use passive: false to allow preventDefault
+    document.addEventListener('wheel', preventBrowserZoom, { passive: false });
+    return () => document.removeEventListener('wheel', preventBrowserZoom);
   }, []);
 
   // Compute background style
@@ -988,10 +1268,9 @@ export default function App() {
 
           <div
             ref={canvasContainerRef}
-            className="flex-1 overflow-hidden relative flex flex-col shadow-inner"
+            className={`flex-1 overflow-hidden relative flex flex-col shadow-inner ${isBatchSelectMode ? 'cursor-crosshair' : (dragState.current.isPanning ? 'cursor-grabbing' : 'cursor-grab')}`}
             style={{
                 backgroundColor: backgroundStyle,
-                cursor: isBatchSelectMode ? 'crosshair' : (dragState.current.isPanning ? 'grabbing' : 'grab'),
                 touchAction: 'none'
             }}
             onPointerDown={(e) => handlePointerDown(e)}
@@ -1000,41 +1279,35 @@ export default function App() {
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
-            onContextMenu={(e) => { 
-                e.preventDefault(); 
-                // Only show menu if we clicked background (deselecting).
-                // If we clicked a layer, the layer's handler would have run already or bubbling is handled.
-                // But context menu event bubbles.
-                // We rely on handleLayerContextMenu stopping propagation?
-                // Actually contextmenu event is different from pointerdown.
-                // We will handle generic background context menu here.
-                setContextMenu({ x: e.clientX, y: e.clientY }); 
+            onContextMenu={(e) => {
+                e.preventDefault();
+                // Right-click on background clears selection
+                setSelectedIds(new Set());
+                setContextMenu({ x: e.clientX, y: e.clientY });
             }}
             onWheel={(e) => {
-                if (e.ctrlKey) {
-                    e.preventDefault();
-                    const containerRect = canvasContainerRef.current?.getBoundingClientRect();
-                    if (!containerRect) return;
+                // Mouse wheel for zoom (no Ctrl needed)
+                // Ctrl+Wheel still supported for compatibility
+                e.preventDefault();
+                const containerRect = canvasContainerRef.current?.getBoundingClientRect();
+                if (!containerRect) return;
 
-                    // Mouse position relative to container
-                    const mouseX = e.clientX - containerRect.left;
-                    const mouseY = e.clientY - containerRect.top;
+                // Mouse position relative to container
+                const mouseX = e.clientX - containerRect.left;
+                const mouseY = e.clientY - containerRect.top;
 
-                    // Calculate new zoom level
-                    const zoomDelta = -e.deltaY * 0.001;
-                    const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
-                    const zoomRatio = newZoom / zoom;
+                // Calculate new zoom level
+                const zoomDelta = -e.deltaY * 0.001;
+                const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
+                const zoomRatio = newZoom / zoom;
 
-                    // Adjust pan to keep the point under the mouse fixed
-                    // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
-                    const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
-                    const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+                // Adjust pan to keep the point under the mouse fixed
+                // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
+                const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
+                const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
 
-                    setZoom(newZoom);
-                    setPan({ x: newPanX, y: newPanY });
-                } else {
-                    setPan(p => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
-                }
+                setZoom(newZoom);
+                setPan({ x: newPanX, y: newPanY });
             }}
           >
             {/* Grid */}
@@ -1069,6 +1342,29 @@ export default function App() {
                 );
             })()}
 
+            {/* Snap Guide Lines */}
+            {settings.showGuides && snapGuides.map((guide, index) => (
+                <div
+                    key={`snap-${guide.type}-${index}`}
+                    className="absolute pointer-events-none z-30"
+                    style={{
+                        ...(guide.type === 'vertical' ? {
+                            left: guide.position * zoom + pan.x,
+                            top: 0,
+                            width: '2px',
+                            height: '100%',
+                        } : {
+                            top: guide.position * zoom + pan.y,
+                            left: 0,
+                            height: '2px',
+                            width: '100%',
+                        }),
+                        backgroundColor: '#10b981',
+                        boxShadow: '0 0 8px rgba(16, 185, 129, 0.8)',
+                    }}
+                />
+            ))}
+
             {/* Canvas Transform */}
             <div ref={canvasRef} className="absolute origin-top-left will-change-transform"
                 style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: '100%', height: '100%' }}>
@@ -1079,8 +1375,8 @@ export default function App() {
                     key={layer.id}
                     onPointerDown={(e) => handlePointerDown(e, layer.id)}
                     onContextMenu={(e) => handleLayerContextMenu(e, layer.id)}
-                    style={{ position: 'absolute', left: layer.x, top: layer.y, width: layer.width, height: layer.height, cursor: 'move', touchAction: 'none' }}
-                    className={`group select-none ${isSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-transparent' : 'hover:ring-1 hover:ring-slate-500'}`}
+                    style={{ position: 'absolute', left: layer.x, top: layer.y, width: layer.width, height: layer.height, touchAction: 'none' }}
+                    className={`group select-none cursor-move ${isSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-transparent' : 'hover:ring-1 hover:ring-slate-500'}`}
                     >
                     <img src={layer.src} alt="layer" className="w-full h-full object-fill pointer-events-none select-none shadow-sm" draggable={false} />
                     {isSelected && (
@@ -1158,15 +1454,26 @@ export default function App() {
                             icon={Combine} 
                         />
                         <AnimatePresence>
-                            {activeMenu === 'stitch' && (
+                            {activeMenu === 'stitch' && (() => {
+                                // Calculate menu position to avoid overflow on mobile
+                                const isMobile = window.innerWidth < 768;
+                                const menuHeight = 600; // Approximate menu height
+                                const viewportHeight = window.innerHeight;
+                                const shouldFlipToTop = isMobile && viewportHeight < menuHeight + 100;
+
+                                return (
                                 <motion.div
                                     initial={{ opacity: 0, scale: 0.95, y: 10 }}
                                     animate={{ opacity: 1, scale: 1, y: 0 }}
                                     exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                                    className="absolute bg-surface border border-slate-700 rounded-xl shadow-xl p-3 w-64 z-50 flex flex-col gap-3
+                                    className={`absolute bg-surface border border-slate-700 rounded-xl shadow-xl p-3 w-64 z-50 flex flex-col gap-3
+                                        ${shouldFlipToTop
+                                            ? 'max-md:bottom-full max-md:mb-2 max-md:left-full max-md:ml-2'
+                                            : 'max-md:left-full max-md:top-0 max-md:ml-2'
+                                        }
                                         md:bottom-full md:left-1/2 md:-translate-x-1/2 md:mb-3
-                                        max-md:left-full max-md:top-0 max-md:ml-2
-                                    "
+                                        max-md:max-h-[80vh] max-md:overflow-y-auto max-md:custom-scrollbar
+                                    `}
                                     onClick={(e) => e.stopPropagation()}
                                 >
                                     <div className="text-xs font-bold text-slate-400 uppercase">{translations[lang].stitchSettings}</div>
@@ -1195,11 +1502,25 @@ export default function App() {
                                         <span className="text-sm text-slate-300 w-12">{translations[lang].gap}</span>
                                         <div className="flex-1 relative">
                                             <input
-                                                type="number"
-                                                min="0"
-                                                value={settings.stitchGap}
-                                                onChange={(e) => setSettings({...settings, stitchGap: Math.max(0, Number(e.target.value))})}
-                                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 pr-7 text-sm text-white focus:border-primary outline-none"
+                                                type="text"
+                                                inputMode="numeric"
+                                                pattern="[0-9]*"
+                                                value={settings.stitchGap || ''}
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    // Allow empty string for clearing
+                                                    if (val === '') {
+                                                        setSettings({...settings, stitchGap: 0});
+                                                        return;
+                                                    }
+                                                    // Only allow digits
+                                                    if (/^\d+$/.test(val)) {
+                                                        const num = parseInt(val, 10);
+                                                        setSettings({...settings, stitchGap: num});
+                                                    }
+                                                }}
+                                                placeholder="0"
+                                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 pr-7 text-sm text-white focus:border-primary outline-none placeholder:text-slate-600"
                                             />
                                             <div className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-slate-700">
                                                 <button
@@ -1254,22 +1575,78 @@ export default function App() {
                                                 </div>
                                             </div>
                                         </div>
+
+                                        {/* Auto Calculate Toggle */}
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-sm text-slate-300">{translations[lang].autoCalc}</span>
+                                            <button
+                                                onClick={() => setSettings({...settings, autoCalcGrid: !settings.autoCalcGrid})}
+                                                className={`w-10 h-5 rounded-full transition-colors relative ${settings.autoCalcGrid ? 'bg-primary' : 'bg-slate-700'}`}
+                                            >
+                                                <div className={`absolute top-1 bottom-1 w-3 h-3 bg-white rounded-full transition-transform ${settings.autoCalcGrid ? 'left-6' : 'left-1'}`} />
+                                            </button>
+                                        </div>
+
+                                        {/* Grid Direction Selection */}
+                                        <div className="flex flex-col gap-1.5">
+                                            <div className="text-[10px] text-slate-500 font-medium uppercase">{translations[lang].gridDirection}</div>
+                                            <div className="flex rounded bg-slate-800 p-0.5">
+                                                <button
+                                                    onClick={() => setSettings((s: AppSettings) => ({...s, gridDirection: 'horizontal'}))}
+                                                    className={`flex-1 py-1 text-[10px] font-medium rounded transition-colors ${settings.gridDirection === 'horizontal' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
+                                                >
+                                                    {translations[lang].gridHorizontal}
+                                                </button>
+                                                <button
+                                                    onClick={() => setSettings((s: AppSettings) => ({...s, gridDirection: 'vertical'}))}
+                                                    className={`flex-1 py-1 text-[10px] font-medium rounded transition-colors ${settings.gridDirection === 'vertical' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
+                                                >
+                                                    {translations[lang].gridVertical}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Grid Reverse Toggle */}
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-sm text-slate-300">{lang === 'zh' ? '倒序排列' : 'Reverse Order'}</span>
+                                            <button
+                                                onClick={() => setSettings({...settings, gridReverse: !settings.gridReverse})}
+                                                className={`w-10 h-5 rounded-full transition-colors relative ${settings.gridReverse ? 'bg-primary' : 'bg-slate-700'}`}
+                                            >
+                                                <div className={`absolute top-1 bottom-1 w-3 h-3 bg-white rounded-full transition-transform ${settings.gridReverse ? 'left-6' : 'left-1'}`} />
+                                            </button>
+                                        </div>
+
                                         <div className="flex items-end gap-2">
                                             <div className="flex flex-col gap-1 flex-1">
                                                 <span className="text-[10px] text-slate-400">{translations[lang].gridRows}</span>
                                                 <div className="relative">
                                                     <input
-                                                        type="number"
-                                                        min="1"
-                                                        max="10"
+                                                        type="text"
+                                                        inputMode="numeric"
                                                         value={settings.gridRows}
-                                                        onChange={(e) => setSettings({...settings, gridRows: Math.max(1, Math.min(10, Number(e.target.value)))})}
+                                                        onChange={(e) => {
+                                                            const val = e.target.value;
+                                                            // Allow empty string for clearing, or valid numbers
+                                                            if (val === '') {
+                                                                setSettings({...settings, gridRows: '' as any});
+                                                            } else if (/^\d+$/.test(val)) {
+                                                                const num = Math.max(1, Math.min(10, parseInt(val, 10)));
+                                                                setSettings({...settings, gridRows: num});
+                                                            }
+                                                        }}
+                                                        onBlur={() => {
+                                                            // Ensure valid value on blur
+                                                            if (settings.gridRows === '' || settings.gridRows < 1) {
+                                                                setSettings({...settings, gridRows: 1});
+                                                            }
+                                                        }}
                                                         className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 pr-7 text-sm text-white focus:border-primary outline-none"
                                                     />
                                                     <div className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-slate-700">
                                                         <button
                                                             type="button"
-                                                            onClick={() => setSettings({...settings, gridRows: Math.min(10, settings.gridRows + 1)})}
+                                                            onClick={() => handleGridRowsChange(settings.gridRows + 1)}
                                                             className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
                                                         >
                                                             <ChevronUp className="w-3 h-3 text-slate-400" />
@@ -1277,7 +1654,7 @@ export default function App() {
                                                         <div className="h-px bg-slate-700" />
                                                         <button
                                                             type="button"
-                                                            onClick={() => setSettings({...settings, gridRows: Math.max(1, settings.gridRows - 1)})}
+                                                            onClick={() => handleGridRowsChange(settings.gridRows - 1)}
                                                             className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
                                                         >
                                                             <ChevronDown className="w-3 h-3 text-slate-400" />
@@ -1289,7 +1666,11 @@ export default function App() {
                                             {/* Swap Button */}
                                             <button
                                                 type="button"
-                                                onClick={() => setSettings({...settings, gridRows: settings.gridCols, gridCols: settings.gridRows})}
+                                                onClick={() => {
+                                                    const rows = typeof settings.gridRows === 'number' ? settings.gridRows : 2;
+                                                    const cols = typeof settings.gridCols === 'number' ? settings.gridCols : 2;
+                                                    setSettings({...settings, gridRows: cols, gridCols: rows});
+                                                }}
                                                 className="p-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors flex items-center justify-center shrink-0"
                                                 title={translations[lang].swapRowsCols || (lang === 'zh' ? '交换行列' : 'Swap rows/cols')}
                                             >
@@ -1300,17 +1681,31 @@ export default function App() {
                                                 <span className="text-[10px] text-slate-400">{translations[lang].gridCols}</span>
                                                 <div className="relative">
                                                     <input
-                                                        type="number"
-                                                        min="1"
-                                                        max="10"
+                                                        type="text"
+                                                        inputMode="numeric"
                                                         value={settings.gridCols}
-                                                        onChange={(e) => setSettings({...settings, gridCols: Math.max(1, Math.min(10, Number(e.target.value)))})}
+                                                        onChange={(e) => {
+                                                            const val = e.target.value;
+                                                            // Allow empty string for clearing, or valid numbers
+                                                            if (val === '') {
+                                                                setSettings({...settings, gridCols: '' as any});
+                                                            } else if (/^\d+$/.test(val)) {
+                                                                const num = Math.max(1, Math.min(10, parseInt(val, 10)));
+                                                                setSettings({...settings, gridCols: num});
+                                                            }
+                                                        }}
+                                                        onBlur={() => {
+                                                            // Ensure valid value on blur
+                                                            if (settings.gridCols === '' || settings.gridCols < 1) {
+                                                                setSettings({...settings, gridCols: 1});
+                                                            }
+                                                        }}
                                                         className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 pr-7 text-sm text-white focus:border-primary outline-none"
                                                     />
                                                     <div className="absolute right-0 top-0 bottom-0 flex flex-col border-l border-slate-700">
                                                         <button
                                                             type="button"
-                                                            onClick={() => setSettings({...settings, gridCols: Math.min(10, settings.gridCols + 1)})}
+                                                            onClick={() => handleGridColsChange(settings.gridCols + 1)}
                                                             className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
                                                         >
                                                             <ChevronUp className="w-3 h-3 text-slate-400" />
@@ -1318,7 +1713,7 @@ export default function App() {
                                                         <div className="h-px bg-slate-700" />
                                                         <button
                                                             type="button"
-                                                            onClick={() => setSettings({...settings, gridCols: Math.max(1, settings.gridCols - 1)})}
+                                                            onClick={() => handleGridColsChange(settings.gridCols - 1)}
                                                             className="flex-1 px-1 hover:bg-slate-700 transition-colors flex items-center justify-center"
                                                         >
                                                             <ChevronDown className="w-3 h-3 text-slate-400" />
@@ -1344,18 +1739,19 @@ export default function App() {
                                             className="flex flex-col items-center gap-1 p-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors text-xs text-slate-300"
                                         >
                                             <VStitchIcon className="w-5 h-5" />
-                                            {translations[lang].vertical}
+                                            {translations[lang].stitchVertical}
                                         </button>
                                         <button
                                             onClick={() => handleAutoStitch('horizontal')}
                                             className="flex flex-col items-center gap-1 p-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors text-xs text-slate-300"
                                         >
                                             <HStitchIcon className="w-5 h-5" />
-                                            {translations[lang].horizontal}
+                                            {translations[lang].stitchHorizontal}
                                         </button>
                                     </div>
                                 </motion.div>
-                            )}
+                                );
+                            })()}
                         </AnimatePresence>
                     </div>
 
@@ -1471,7 +1867,7 @@ export default function App() {
                         style={{ top: 0, left: 0, width: '100%', height: '100%' }}
                     >
                         <div className="pointer-events-auto">
-                           <LayerPanel 
+                           <LayerPanel
                                 layers={layers}
                                 selectedIds={selectedIds}
                                 onSelect={(id: string, multi: boolean) => {
@@ -1479,11 +1875,16 @@ export default function App() {
                                     if (multi && selectedIds.has(id)) newSet.delete(id);
                                     setSelectedIds(newSet);
                                 }}
+                                onBatchSelect={(ids: Set<string>) => {
+                                    setSelectedIds(ids);
+                                }}
                                 onReorder={reorderLayers}
                                 onClose={() => setShowLayerPanel(false)}
                                 lang={lang}
                                 initialPosition={layerPanelPos}
                                 initialAlignment={layerPanelAlign}
+                                onDuplicateLayer={duplicateLayer}
+                                onDeleteLayers={deleteLayers}
                             />
                         </div>
                     </motion.div>

@@ -71,7 +71,13 @@ export const translations: Record<Language, Record<string, string>> = {
     gridDesc: "Arrange images in a rectangular grid. Images maintain aspect ratio and fit within cells.",
     selectAll: "Select All",
     clearCanvas: "Clear Canvas",
-    clearCanvasConfirm: "Are you sure you want to clear all layers? This action cannot be undone."
+    clearCanvasConfirm: "Are you sure you want to clear all layers? This action cannot be undone.",
+    autoCalc: "Auto Calculate",
+    gridDirection: "Fill Direction",
+    gridHorizontal: "Horizontal First",
+    gridVertical: "Vertical First",
+    stitchVertical: "Vertical",
+    stitchHorizontal: "Horizontal"
   },
   zh: {
     tools: "工具箱",
@@ -142,6 +148,12 @@ export const translations: Record<Language, Record<string, string>> = {
     gridDesc: "将图片排列为矩形网格。图片保持宽高比并适配单元格，超出数量的格子留空。",
     selectAll: "全选图层",
     clearCanvas: "清空画布",
-    clearCanvasConfirm: "确定要清空所有图层吗？此操作无法撤销。"
+    clearCanvasConfirm: "确定要清空所有图层吗？此操作无法撤销。",
+    autoCalc: "自动计算",
+    gridDirection: "填充方向",
+    gridHorizontal: "横向优先",
+    gridVertical: "纵向优先",
+    stitchVertical: "竖向拼接",
+    stitchHorizontal: "横向拼接"
   }
 };

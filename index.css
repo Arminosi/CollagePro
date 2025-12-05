@@ -9,6 +9,63 @@
   --cursor-nesw-resize: nesw-resize;
 }
 
+/* Enhanced Cursor Styles */
+* {
+  cursor: default;
+}
+
+button, a, [role="button"] {
+  cursor: pointer;
+}
+
+input, textarea, select {
+  cursor: text;
+}
+
+/* Canvas cursors */
+.cursor-grab {
+  cursor: grab !important;
+}
+
+.cursor-grabbing {
+  cursor: grabbing !important;
+}
+
+.cursor-move {
+  cursor: move !important;
+}
+
+.cursor-crosshair {
+  cursor: crosshair !important;
+}
+
+/* Resize cursors with better visibility */
+.cursor-nwse-resize {
+  cursor: nwse-resize !important;
+}
+
+.cursor-nesw-resize {
+  cursor: nesw-resize !important;
+}
+
+.cursor-ns-resize {
+  cursor: ns-resize !important;
+}
+
+.cursor-ew-resize {
+  cursor: ew-resize !important;
+}
+
+/* Pointer cursor for interactive elements */
+.hover\:cursor-pointer:hover {
+  cursor: pointer !important;
+}
+
+/* Disabled cursor */
+[disabled], .disabled {
+  cursor: not-allowed !important;
+}
+
 /* Custom number input styling - hide default spinners */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {

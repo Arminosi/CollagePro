@@ -21,8 +21,11 @@ export interface AppSettings {
   backgroundMode: 'grid' | 'solid';
   backgroundColor: string;
   previewBackground: boolean;
-  gridRows: number;
-  gridCols: number;
+  gridRows: number | '';
+  gridCols: number | '';
+  autoCalcGrid: boolean;
+  gridDirection: 'horizontal' | 'vertical';
+  gridReverse: boolean;
 }
 
 export interface DragState {

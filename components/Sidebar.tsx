@@ -30,6 +30,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [tab, setTab] = React.useState<'settings' | 'history'>('settings');
   const [confirmGithub, setConfirmGithub] = React.useState(false);
+  const [confirmClear, setConfirmClear] = React.useState(false);
   const t = translations[lang];
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -53,7 +54,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   React.useEffect(() => {
-    const handleClickOutside = () => setConfirmGithub(false);
+    const handleClickOutside = () => {
+      setConfirmGithub(false);
+      setConfirmClear(false);
+    };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
@@ -105,15 +109,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             {/* Clear Canvas Button */}
             <button
-                onClick={() => {
-                    if (confirm(t.clearCanvasConfirm)) {
+                onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirmClear) {
                         onClearCanvas();
+                        setConfirmClear(false);
+                    } else {
+                        setConfirmClear(true);
                     }
                 }}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-red-900/20 hover:bg-red-900/40 border border-red-800/50 rounded-lg text-red-400 hover:text-red-300 transition-colors text-sm font-medium"
+                className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 border rounded-lg transition-all text-sm font-medium ${
+                    confirmClear
+                        ? 'bg-red-600 hover:bg-red-700 border-red-500 text-white'
+                        : 'bg-red-900/20 hover:bg-red-900/40 border-red-800/50 text-red-400 hover:text-red-300'
+                }`}
             >
                 <Trash2 className="w-4 h-4" />
-                {t.clearCanvas}
+                {confirmClear ? (lang === 'zh' ? '确认清空？' : 'Confirm Clear?') : t.clearCanvas}
             </button>
 
             <div className="h-px bg-slate-800" />
