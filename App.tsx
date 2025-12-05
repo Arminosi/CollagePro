@@ -120,22 +120,30 @@ export default function App() {
     isResizing: boolean;
     isPanning: boolean;
     isSelecting: boolean;
+    isPinching: boolean;
     startX: number;
     startY: number;
     initialPan: { x: number; y: number };
     initialLayers: Record<string, { x: number; y: number; width: number; height: number }>;
     selectionBox: { startX: number; startY: number; endX: number; endY: number } | null;
     handle?: string;
+    pinchStartDistance: number;
+    pinchStartZoom: number;
+    pinchCenter: { x: number; y: number };
   }>({
     isDragging: false,
     isResizing: false,
     isPanning: false,
     isSelecting: false,
+    isPinching: false,
     startX: 0,
     startY: 0,
     initialPan: { x: 0, y: 0 },
     initialLayers: {},
-    selectionBox: null
+    selectionBox: null,
+    pinchStartDistance: 0,
+    pinchStartZoom: 1,
+    pinchCenter: { x: 0, y: 0 }
   });
   
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
@@ -416,6 +424,25 @@ export default function App() {
   };
 
   // --- Canvas Interaction ---
+  // Zoom with anchor point (defaults to viewport center)
+  const zoomAtPoint = (newZoom: number, anchorX?: number, anchorY?: number) => {
+    const containerRect = canvasContainerRef.current?.getBoundingClientRect();
+    if (!containerRect) return;
+
+    const clampedZoom = Math.min(3, Math.max(0.2, newZoom));
+
+    // Default anchor to viewport center
+    const pointX = anchorX ?? containerRect.width / 2;
+    const pointY = anchorY ?? containerRect.height / 2;
+
+    const zoomRatio = clampedZoom / zoom;
+    const newPanX = pointX - (pointX - pan.x) * zoomRatio;
+    const newPanY = pointY - (pointY - pan.y) * zoomRatio;
+
+    setZoom(clampedZoom);
+    setPan({ x: newPanX, y: newPanY });
+  };
+
   const getCanvasCoordinates = (e: React.PointerEvent | PointerEvent) => {
      const container = canvasRef.current?.parentElement;
      if (!container) return { x: 0, y: 0 };
@@ -439,7 +466,7 @@ export default function App() {
       dragState.current.startX = coords.x;
       dragState.current.startY = coords.y;
 
-      let newSelectedIds = new Set(selectedIds);
+      let newSelectedIds = new Set<string>(selectedIds);
       const isMultiSelect = e.shiftKey || isBatchSelectMode;
 
       if (isMultiSelect) {
@@ -592,14 +619,71 @@ export default function App() {
     }
     
     if (dragState.current.isDragging || dragState.current.isResizing) pushHistory(layers);
-    dragState.current = { 
-        isDragging: false, isResizing: false, isPanning: false, isSelecting: false,
-        startX: 0, startY: 0, initialPan: { x: 0, y: 0}, initialLayers: {}, selectionBox: null
+    dragState.current = {
+        isDragging: false, isResizing: false, isPanning: false, isSelecting: false, isPinching: false,
+        startX: 0, startY: 0, initialPan: { x: 0, y: 0}, initialLayers: {}, selectionBox: null,
+        pinchStartDistance: 0, pinchStartZoom: 1, pinchCenter: { x: 0, y: 0 }
     };
     setSelectionBox(null);
     (e.target as Element).releasePointerCapture(e.pointerId);
   };
-  
+
+  // --- Touch Pinch Zoom ---
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const touch1 = e.touches[0];
+      const touch2 = e.touches[1];
+      const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+      const containerRect = canvasContainerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+
+      const centerX = (touch1.clientX + touch2.clientX) / 2 - containerRect.left;
+      const centerY = (touch1.clientY + touch2.clientY) / 2 - containerRect.top;
+
+      dragState.current.isPinching = true;
+      dragState.current.pinchStartDistance = distance;
+      dragState.current.pinchStartZoom = zoom;
+      dragState.current.pinchCenter = { x: centerX, y: centerY };
+      dragState.current.initialPan = { ...pan };
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && dragState.current.isPinching) {
+      e.preventDefault();
+      const touch1 = e.touches[0];
+      const touch2 = e.touches[1];
+      const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+      const containerRect = canvasContainerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+
+      // Calculate new zoom based on pinch distance ratio
+      const scale = distance / dragState.current.pinchStartDistance;
+      const newZoom = Math.min(3, Math.max(0.2, dragState.current.pinchStartZoom * scale));
+
+      // Calculate current pinch center
+      const currentCenterX = (touch1.clientX + touch2.clientX) / 2 - containerRect.left;
+      const currentCenterY = (touch1.clientY + touch2.clientY) / 2 - containerRect.top;
+
+      // Adjust pan to keep the initial pinch center point fixed
+      const zoomRatio = newZoom / dragState.current.pinchStartZoom;
+      const { pinchCenter, initialPan } = dragState.current;
+
+      const newPanX = currentCenterX - (pinchCenter.x - initialPan.x) * zoomRatio;
+      const newPanY = currentCenterY - (pinchCenter.y - initialPan.y) * zoomRatio;
+
+      setZoom(newZoom);
+      setPan({ x: newPanX, y: newPanY });
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) {
+      dragState.current.isPinching = false;
+    }
+  };
+
   // Explicitly select a layer on context menu click to ensure actions apply to it
   const handleLayerContextMenu = (e: React.MouseEvent, layerId: string) => {
     e.preventDefault();
@@ -774,11 +858,11 @@ export default function App() {
 
          <div className="flex items-center gap-2">
              <div className="flex items-center bg-slate-800/50 rounded-lg p-1 mr-2 border border-slate-700/50">
-                 <button onClick={() => setZoom(z => Math.max(0.2, z - 0.1))} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors hidden sm:block">
+                 <button onClick={() => zoomAtPoint(zoom - 0.1)} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors hidden sm:block">
                     <ZoomOut className="w-4 h-4" />
                  </button>
                  <span className="text-xs w-10 text-center text-slate-400 font-mono hidden sm:block">{Math.round(zoom * 100)}%</span>
-                 <button onClick={() => setZoom(z => Math.min(3, z + 0.1))} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors hidden sm:block">
+                 <button onClick={() => zoomAtPoint(zoom + 0.1)} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors hidden sm:block">
                     <ZoomIn className="w-4 h-4" />
                  </button>
                  <button onClick={() => handleFitView()} className="p-1.5 hover:bg-slate-700 rounded-md text-slate-300 transition-colors" title={translations[lang].fitView}>
@@ -808,10 +892,10 @@ export default function App() {
             onProcessFiles={processFiles}
           />
 
-          <div 
+          <div
             ref={canvasContainerRef}
             className="flex-1 overflow-hidden relative flex flex-col shadow-inner"
-            style={{ 
+            style={{
                 backgroundColor: backgroundStyle,
                 cursor: isBatchSelectMode ? 'crosshair' : (dragState.current.isPanning ? 'grabbing' : 'grab'),
                 touchAction: 'none'
@@ -819,6 +903,9 @@ export default function App() {
             onPointerDown={(e) => handlePointerDown(e)}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
             onContextMenu={(e) => { 
                 e.preventDefault(); 
                 // Only show menu if we clicked background (deselecting).
@@ -832,7 +919,25 @@ export default function App() {
             onWheel={(e) => {
                 if (e.ctrlKey) {
                     e.preventDefault();
-                    setZoom(z => Math.min(3, Math.max(0.2, z - e.deltaY * 0.001)));
+                    const containerRect = canvasContainerRef.current?.getBoundingClientRect();
+                    if (!containerRect) return;
+
+                    // Mouse position relative to container
+                    const mouseX = e.clientX - containerRect.left;
+                    const mouseY = e.clientY - containerRect.top;
+
+                    // Calculate new zoom level
+                    const zoomDelta = -e.deltaY * 0.001;
+                    const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
+                    const zoomRatio = newZoom / zoom;
+
+                    // Adjust pan to keep the point under the mouse fixed
+                    // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
+                    const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
+                    const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+
+                    setZoom(newZoom);
+                    setPan({ x: newPanX, y: newPanY });
                 } else {
                     setPan(p => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
                 }
@@ -1128,6 +1233,7 @@ export default function App() {
             <AnimatePresence>
                 {showLayerPanel && (
                     <motion.div
+                        layoutRoot
                         initial={{ opacity: 0, scale: 0.95 }}
                         animate={{ opacity: 1, scale: 1 }}
                         exit={{ opacity: 0, scale: 0.95 }}
@@ -1210,7 +1316,7 @@ export default function App() {
                     onSendToBack={sendToBack}
                     onDownload={() => { 
                         // Download single image
-                        const id = Array.from(selectedIds)[0]; 
+                        const id = Array.from(selectedIds)[0] as string;
                         handleExportClick(id); 
                     }}
                     hasSelection={selectedIds.size > 0}
