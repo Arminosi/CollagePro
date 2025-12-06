@@ -139,6 +139,8 @@ export default function App() {
     pinchStartDistance: number;
     pinchStartZoom: number;
     pinchCenter: { x: number; y: number };
+    isAltDragging: boolean;
+    clonedLayerIds: Record<string, string>; // Maps original ID to cloned ID
   }>({
     isDragging: false,
     isResizing: false,
@@ -153,7 +155,9 @@ export default function App() {
     selectionBox: null,
     pinchStartDistance: 0,
     pinchStartZoom: 1,
-    pinchCenter: { x: 0, y: 0 }
+    pinchCenter: { x: 0, y: 0 },
+    isAltDragging: false,
+    clonedLayerIds: {}
   });
   
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
@@ -166,21 +170,21 @@ export default function App() {
     setHistoryIndex(newHistory.length - 1);
   }, [history, historyIndex]);
 
-  const undo = () => {
+  const undo = useCallback(() => {
     if (historyIndex > 0) {
       const prev = history[historyIndex - 1];
-      setLayers(prev); 
+      setLayers(prev);
       setHistoryIndex(historyIndex - 1);
     }
-  };
+  }, [history, historyIndex]);
 
-  const redo = () => {
+  const redo = useCallback(() => {
     if (historyIndex < history.length - 1) {
       const next = history[historyIndex + 1];
       setLayers(next);
       setHistoryIndex(historyIndex + 1);
     }
-  };
+  }, [history, historyIndex]);
 
   // --- Image Handling ---
   const processFiles = (files: File[]) => {
@@ -758,8 +762,78 @@ export default function App() {
         dragState.current.handle = handle;
         dragState.current.initialLayers = { [layerId]: { ...layers.find(l => l.id === layerId)! } };
       } else {
+        // Check if Alt key is pressed for cloning (works in both normal and batch select mode)
+        if (e.altKey) {
+          // Alt+Drag to clone layers
+          dragState.current.isAltDragging = true;
+          const clonedLayerIds: Record<string, string> = {};
+          const clonedLayers: CanvasLayer[] = [];
+
+          // Create clones of all selected layers
+          newSelectedIds.forEach(originalId => {
+            const originalLayer = layers.find(l => l.id === originalId);
+            if (originalLayer) {
+              const clonedId = Math.random().toString(36).substr(2, 9);
+              clonedLayerIds[originalId] = clonedId;
+
+              // Generate unique name with counter
+              const baseName = originalLayer.name || 'Layer';
+
+              // Extract file extension if exists
+              const lastDotIndex = baseName.lastIndexOf('.');
+              const hasExtension = lastDotIndex > 0 && lastDotIndex < baseName.length - 1;
+
+              let nameWithoutExt = baseName;
+              let extension = '';
+
+              if (hasExtension) {
+                nameWithoutExt = baseName.substring(0, lastDotIndex);
+                extension = baseName.substring(lastDotIndex); // includes the dot
+              }
+
+              // Count existing clones with the same base name pattern
+              const existingClones = layers.filter(l => {
+                if (!l.name) return false;
+                // Match pattern: basename_number or basename_number.ext
+                const pattern = new RegExp(`^${nameWithoutExt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_\\d+`);
+                return pattern.test(l.name);
+              });
+              const nextNumber = existingClones.length + 1;
+
+              clonedLayers.push({
+                ...originalLayer,
+                id: clonedId,
+                name: `${nameWithoutExt}_${nextNumber}${extension}`,
+                zIndex: layers.length + clonedLayers.length
+              });
+            }
+          });
+
+          dragState.current.clonedLayerIds = clonedLayerIds;
+
+          // Add cloned layers to the canvas
+          setLayers([...layers, ...clonedLayers]);
+
+          // Select the cloned layers
+          const clonedIds = new Set(Object.values(clonedLayerIds));
+          setSelectedIds(clonedIds);
+
+          // Set initial positions for dragging clones
+          const clonedInitialLayers: Record<string, Rect> = {};
+          clonedLayers.forEach(layer => {
+            clonedInitialLayers[layer.id] = {
+              x: layer.x,
+              y: layer.y,
+              width: layer.width,
+              height: layer.height
+            };
+          });
+          dragState.current.initialLayers = clonedInitialLayers;
+        } else {
+          // Normal dragging
+          dragState.current.initialLayers = initialLayersMap;
+        }
         dragState.current.isDragging = true;
-        dragState.current.initialLayers = initialLayersMap;
       }
     } else {
         if (isBatchSelectMode) {
@@ -946,10 +1020,12 @@ export default function App() {
     }
 
     if (dragState.current.isDragging || dragState.current.isResizing) pushHistory(layers);
+
     dragState.current = {
         isDragging: false, isResizing: false, isPanning: false, isSelecting: false, isPinching: false, hasMoved: false,
         startX: 0, startY: 0, initialPan: { x: 0, y: 0}, initialLayers: {}, selectionBox: null,
-        pinchStartDistance: 0, pinchStartZoom: 1, pinchCenter: { x: 0, y: 0 }
+        pinchStartDistance: 0, pinchStartZoom: 1, pinchCenter: { x: 0, y: 0 },
+        isAltDragging: false, clonedLayerIds: {}
     };
     setSelectionBox(null);
     setSnapGuides([]); // Clear snap guides when releasing
@@ -1026,12 +1102,12 @@ export default function App() {
   };
 
   // --- Deletion & Layer Order ---
-  const deleteSelected = () => {
+  const deleteSelected = useCallback(() => {
     const newLayers = layers.filter(l => !selectedIds.has(l.id));
     setLayers(newLayers);
     setSelectedIds(new Set());
     pushHistory(newLayers);
-  };
+  }, [layers, selectedIds, pushHistory]);
 
   const duplicateLayer = (layerId: string) => {
     const layerToDuplicate = layers.find(l => l.id === layerId);
@@ -1073,10 +1149,10 @@ export default function App() {
       setLayers(newLayers);
       pushHistory(newLayers);
   };
-  const selectAllLayers = () => {
+  const selectAllLayers = useCallback(() => {
       const allIds = new Set(layers.map((l: CanvasLayer) => l.id));
       setSelectedIds(allIds);
-  };
+  }, [layers]);
 
   const clearCanvas = () => {
       setLayers([]);
