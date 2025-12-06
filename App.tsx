@@ -1,6 +1,8 @@
 
 /// <reference lib="dom" />
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import JSZip from 'jszip';
+import { writePsd, readPsd } from 'ag-psd';
 import { Sidebar } from './components/Sidebar';
 import { LayerPanel } from './components/LayerPanel';
 import { ContextMenu } from './components/ContextMenu';
@@ -103,7 +105,7 @@ export default function App() {
   const [versions, setVersions] = useState<SavedVersion[]>([]);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth < 768); // Mobile: open by default, desktop: closed by default
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true); // Desktop and mobile: open by default
   const [lang, setLang] = useState<Language>('zh');
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
@@ -111,6 +113,13 @@ export default function App() {
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
   const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  // Toast notification helper
+  const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
 
   // UI States
   const [showLayerPanel, setShowLayerPanel] = useState(false);
@@ -1218,19 +1227,55 @@ export default function App() {
     link.download = `collage-${Date.now()}.png`;
     link.href = url;
     link.click();
-    
-    // Save version history logic
-    const newVersion: SavedVersion = {
-        id: Date.now().toString(), timestamp: Date.now(), layers: JSON.parse(JSON.stringify(layers)), thumbnail: url 
-    };
-    setVersions(prev => [newVersion, ...prev]);
-    try {
-        const stored = localStorage.getItem('collage_versions');
-        const parsed = stored ? JSON.parse(stored) : [];
-        if (parsed.length > 5) parsed.pop();
-        localStorage.setItem('collage_versions', JSON.stringify([newVersion, ...parsed]));
-    } catch (e) { console.warn("Local storage full"); }
+
+    // Save version history logic with manual save type
+    saveVersion('manual', url);
   };
+
+  // Save version to history
+  const saveVersion = async (saveType: 'manual' | 'auto', thumbnail?: string) => {
+    if (layers.length === 0) return;
+
+    // Generate thumbnail if not provided
+    let thumbnailUrl = thumbnail;
+    if (!thumbnailUrl) {
+      thumbnailUrl = await generateExportUrl();
+    }
+
+    const newVersion: SavedVersion = {
+      id: Date.now().toString(),
+      timestamp: Date.now(),
+      layers: JSON.parse(JSON.stringify(layers)),
+      thumbnail: thumbnailUrl || undefined,
+      saveType
+    };
+
+    setVersions(prev => {
+      const updated = [newVersion, ...prev];
+      // Keep max 100 versions (50 auto + 50 manual)
+      const manualVersions = updated.filter(v => v.saveType === 'manual').slice(0, 50);
+      const autoVersions = updated.filter(v => v.saveType === 'auto').slice(0, 50);
+      return [...manualVersions, ...autoVersions].sort((a, b) => b.timestamp - a.timestamp);
+    });
+
+    try {
+      const stored = localStorage.getItem('collage_versions');
+      const parsed = stored ? JSON.parse(stored) : [];
+      const updated = [newVersion, ...parsed];
+      const manualVersions = updated.filter((v: SavedVersion) => v.saveType === 'manual').slice(0, 50);
+      const autoVersions = updated.filter((v: SavedVersion) => v.saveType === 'auto').slice(0, 50);
+      const final = [...manualVersions, ...autoVersions].sort((a: SavedVersion, b: SavedVersion) => b.timestamp - a.timestamp);
+      localStorage.setItem('collage_versions', JSON.stringify(final));
+    } catch (e) {
+      console.warn("Local storage full");
+    }
+  };
+
+  // Manual save function (Ctrl+S)
+  const handleManualSave = useCallback(() => {
+    saveVersion('manual');
+  }, [layers]);
+
 
   
   useEffect(() => {
@@ -1248,6 +1293,288 @@ export default function App() {
       }
   };
 
+  const exportVersionPackage = async (version: SavedVersion) => {
+    try {
+      const zip = new JSZip();
+
+      // Create folders
+      const imagesFolder = zip.folder('images');
+      if (!imagesFolder) throw new Error('Failed to create images folder');
+
+      // Add layer images to zip
+      const imagePromises = version.layers.map(async (layer, index) => {
+        // Convert data URL to blob
+        const response = await fetch(layer.src);
+        const blob = await response.blob();
+
+        // Generate filename from layer name or use index
+        const fileName = layer.name || `layer_${index + 1}.png`;
+        imagesFolder.file(fileName, blob);
+
+        return {
+          id: layer.id,
+          name: fileName,
+          dataUrl: layer.src
+        };
+      });
+
+      const images = await Promise.all(imagePromises);
+
+      // Create canvas info JSON
+      const canvasInfo = {
+        version: '1.0',
+        exportDate: new Date(version.timestamp).toISOString(),
+        layers: version.layers.map((layer, index) => ({
+          id: layer.id,
+          name: layer.name,
+          fileName: images[index].name,
+          x: layer.x,
+          y: layer.y,
+          width: layer.width,
+          height: layer.height,
+          zIndex: layer.zIndex
+        })),
+        settings: {
+          // Include relevant settings if needed
+        }
+      };
+
+      // Add canvas info JSON to zip
+      zip.file('canvas_info.json', JSON.stringify(canvasInfo, null, 2));
+
+      // Add README
+      const readme = `CollagePro Version Package
+
+Export Date: ${new Date(version.timestamp).toLocaleString()}
+Total Layers: ${version.layers.length}
+
+Contents:
+- images/: All layer images
+- canvas_info.json: Canvas configuration and layer positions
+
+To restore this version:
+1. Open CollagePro
+2. Import all images from the images folder
+3. Use canvas_info.json to arrange layers according to saved positions
+`;
+
+      zip.file('README.txt', readme);
+
+      // Generate zip file and download
+      const content = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(content);
+      const link = document.createElement('a');
+      link.download = `collagepro_version_${version.id}.zip`;
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting version package:', error);
+      alert('Failed to export version package. Please try again.');
+    }
+  };
+
+  // Import version package
+  const importVersionPackage = async (file: File) => {
+    try {
+      const zip = await JSZip.loadAsync(file);
+
+      // Read canvas info
+      const canvasInfoFile = zip.file('canvas_info.json');
+      if (!canvasInfoFile) {
+        alert('Invalid version package: missing canvas_info.json');
+        return;
+      }
+
+      const canvasInfoText = await canvasInfoFile.async('text');
+      const canvasInfo = JSON.parse(canvasInfoText);
+
+      // Read all images
+      const imagesFolder = zip.folder('images');
+      if (!imagesFolder) {
+        alert('Invalid version package: missing images folder');
+        return;
+      }
+
+      const newLayers: CanvasLayer[] = [];
+
+      for (const layerInfo of canvasInfo.layers) {
+        const imageFile = zip.file(`images/${layerInfo.fileName}`);
+        if (imageFile) {
+          const blob = await imageFile.async('blob');
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+
+          newLayers.push({
+            id: layerInfo.id || Math.random().toString(36).substr(2, 9),
+            src: dataUrl,
+            x: layerInfo.x,
+            y: layerInfo.y,
+            width: layerInfo.width,
+            height: layerInfo.height,
+            zIndex: layerInfo.zIndex,
+            name: layerInfo.name
+          });
+        }
+      }
+
+      if (newLayers.length > 0) {
+        // Update zIndex to place new layers on top
+        const updatedNewLayers = newLayers.map((layer, index) => ({
+          ...layer,
+          zIndex: layers.length + index
+        }));
+
+        const allLayers = [...layers, ...updatedNewLayers];
+        setLayers(allLayers);
+        pushHistory(allLayers);
+        showToast(`${translations[lang].importVersionSuccess || 'Successfully imported'} ${newLayers.length} ${translations[lang].layersCount}`, 'success');
+      }
+    } catch (error) {
+      console.error('Error importing version package:', error);
+      showToast(translations[lang].importVersionFailed || 'Failed to import version package', 'error');
+    }
+  };
+
+  // Export as PSD
+  const exportAsPSD = async (version?: SavedVersion) => {
+    try {
+      const exportLayers = version ? version.layers : layers;
+      if (exportLayers.length === 0) return;
+
+      // Calculate canvas bounds
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      exportLayers.forEach(l => {
+        minX = Math.min(minX, l.x);
+        minY = Math.min(minY, l.y);
+        maxX = Math.max(maxX, l.x + l.width);
+        maxY = Math.max(maxY, l.y + l.height);
+      });
+
+      const width = Math.ceil(maxX - minX);
+      const height = Math.ceil(maxY - minY);
+
+      // Create PSD layers
+      const psdLayers = await Promise.all(exportLayers.map(async (layer) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = layer.src;
+        });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(layer.width);
+        canvas.height = Math.ceil(layer.height);
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, layer.width, layer.height);
+        }
+
+        return {
+          name: layer.name || `Layer ${layer.zIndex + 1}`,
+          left: Math.round(layer.x - minX),
+          top: Math.round(layer.y - minY),
+          canvas: canvas
+        };
+      }));
+
+      // Create PSD document
+      const psd = {
+        width,
+        height,
+        children: psdLayers.reverse() // Reverse to match z-order
+      };
+
+      const buffer = writePsd(psd);
+      const blob = new Blob([buffer], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.download = version
+        ? `collagepro_version_${version.id}.psd`
+        : `collage-${Date.now()}.psd`;
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error exporting PSD:', error);
+      alert('Failed to export PSD. Please try again.');
+    }
+  };
+
+  // Import PSD
+  const importPSD = async (file: File) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const psd = readPsd(arrayBuffer);
+
+      if (!psd.children || psd.children.length === 0) {
+        alert('No layers found in PSD file.');
+        return;
+      }
+
+      const newLayers: CanvasLayer[] = [];
+
+      for (let i = 0; i < psd.children.length; i++) {
+        const psdLayer = psd.children[i];
+        if (!psdLayer.canvas) continue;
+
+        // Convert canvas to data URL
+        const dataUrl = psdLayer.canvas.toDataURL('image/png');
+
+        newLayers.push({
+          id: Math.random().toString(36).substr(2, 9),
+          src: dataUrl,
+          x: psdLayer.left || 0,
+          y: psdLayer.top || 0,
+          width: psdLayer.canvas.width,
+          height: psdLayer.canvas.height,
+          zIndex: psd.children.length - 1 - i, // Reverse z-order
+          name: psdLayer.name || `Layer ${i + 1}`
+        });
+      }
+
+      if (newLayers.length > 0) {
+        // Update zIndex to place new layers on top
+        const updatedNewLayers = newLayers.map((layer, index) => ({
+          ...layer,
+          zIndex: layers.length + index
+        }));
+
+        const allLayers = [...layers, ...updatedNewLayers];
+        setLayers(allLayers);
+        pushHistory(allLayers);
+        showToast(`${translations[lang].importPSDSuccess || 'Successfully imported'} ${newLayers.length} ${translations[lang].layersCount}`, 'success');
+      }
+    } catch (error) {
+      console.error('Error importing PSD:', error);
+      showToast(translations[lang].importPSDFailed || 'Failed to import PSD', 'error');
+    }
+  };
+
+  // Clear all versions
+  const clearAllVersions = () => {
+    if (confirm(translations[lang].clearAllVersionsConfirm)) {
+      setVersions([]);
+      localStorage.removeItem('collage_versions');
+    }
+  };
+
+  // Delete a single version
+  const deleteVersion = (versionId: string) => {
+    const updatedVersions = versions.filter(v => v.id !== versionId);
+    setVersions(updatedVersions);
+    try {
+      localStorage.setItem('collage_versions', JSON.stringify(updatedVersions));
+    } catch (e) {
+      console.warn("Local storage error");
+    }
+  };
+
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
           // Check if user is typing in an input or textarea
@@ -1257,6 +1584,12 @@ export default function App() {
           // Track Alt key state
           if (e.key === 'Alt') {
               setIsAltKeyPressed(true);
+          }
+
+          // Ctrl+S / Cmd+S for manual save
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+              e.preventDefault();
+              handleManualSave();
           }
 
           // Ctrl+Z / Cmd+Z for undo
@@ -1311,7 +1644,19 @@ export default function App() {
           window.removeEventListener('keyup', handleKeyUp);
           window.removeEventListener('blur', handleBlur);
       };
-  }, [layers, selectedIds, history, historyIndex, undo, redo, deleteSelected, selectAllLayers]);
+  }, [layers, selectedIds, history, historyIndex, undo, redo, deleteSelected, selectAllLayers, handleManualSave]);
+
+  // Auto-save every 1 minute
+  useEffect(() => {
+    if (layers.length === 0) return;
+
+    const autoSaveInterval = setInterval(() => {
+      saveVersion('auto');
+    }, 60000); // 1 minute
+
+    return () => clearInterval(autoSaveInterval);
+  }, [layers]);
+
 
   // --- Click Outside to close Popovers ---
   useEffect(() => {
@@ -1332,6 +1677,40 @@ export default function App() {
     document.addEventListener('wheel', preventBrowserZoom, { passive: false });
     return () => document.removeEventListener('wheel', preventBrowserZoom);
   }, []);
+
+  // Handle wheel zoom on canvas container
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Mouse wheel for zoom (no Ctrl needed)
+      // Ctrl+Wheel still supported for compatibility
+      e.preventDefault();
+      const containerRect = container.getBoundingClientRect();
+
+      // Mouse position relative to container
+      const mouseX = e.clientX - containerRect.left;
+      const mouseY = e.clientY - containerRect.top;
+
+      // Calculate new zoom level
+      const zoomDelta = -e.deltaY * 0.001;
+      const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
+      const zoomRatio = newZoom / zoom;
+
+      // Adjust pan to keep the point under the mouse fixed
+      // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
+      const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
+      const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+
+      setZoom(newZoom);
+      setPan({ x: newPanX, y: newPanY });
+    };
+
+    // Use passive: false to allow preventDefault
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [zoom, pan]);
 
   // Compute background style
   const backgroundStyle = settings.backgroundMode === 'solid' 
@@ -1394,6 +1773,14 @@ export default function App() {
             updateSettings={(s) => setSettings(prev => ({...prev, ...s}))}
             versions={versions}
             onLoadVersion={loadVersion}
+            onExportVersion={exportVersionPackage}
+            onExportVersionPSD={exportAsPSD}
+            onImportVersion={importVersionPackage}
+            onImportPSD={importPSD}
+            onExportPSD={() => exportAsPSD()}
+            onClearAllVersions={clearAllVersions}
+            onDeleteVersion={deleteVersion}
+            onManualSave={handleManualSave}
             isOpen={isSidebarOpen}
             lang={lang}
             onProcessFiles={processFiles}
@@ -1418,30 +1805,6 @@ export default function App() {
                 // Right-click on background clears selection
                 setSelectedIds(new Set());
                 setContextMenu({ x: e.clientX, y: e.clientY });
-            }}
-            onWheel={(e) => {
-                // Mouse wheel for zoom (no Ctrl needed)
-                // Ctrl+Wheel still supported for compatibility
-                e.preventDefault();
-                const containerRect = canvasContainerRef.current?.getBoundingClientRect();
-                if (!containerRect) return;
-
-                // Mouse position relative to container
-                const mouseX = e.clientX - containerRect.left;
-                const mouseY = e.clientY - containerRect.top;
-
-                // Calculate new zoom level
-                const zoomDelta = -e.deltaY * 0.001;
-                const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
-                const zoomRatio = newZoom / zoom;
-
-                // Adjust pan to keep the point under the mouse fixed
-                // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
-                const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
-                const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
-
-                setZoom(newZoom);
-                setPan({ x: newPanX, y: newPanY });
             }}
           >
             {/* Grid */}
@@ -2146,6 +2509,24 @@ export default function App() {
                     </AnimatePresence>
                 </div>
             </div>
+
+            {/* Toast Notification */}
+            <AnimatePresence>
+                {toast && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -20 }}
+                        className={`fixed top-20 left-1/2 -translate-x-1/2 z-70 px-6 py-3 rounded-lg shadow-2xl border flex items-center gap-3 ${
+                            toast.type === 'success'
+                                ? 'bg-emerald-600 border-emerald-500 text-white'
+                                : 'bg-red-600 border-red-500 text-white'
+                        }`}
+                    >
+                        <span className="text-sm font-medium">{toast.message}</span>
+                    </motion.div>
+                )}
+            </AnimatePresence>
           </div>
       </div>
     </div>
