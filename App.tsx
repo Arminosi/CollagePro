@@ -109,6 +109,7 @@ export default function App() {
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+  const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
   
   // UI States
   const [showLayerPanel, setShowLayerPanel] = useState(false);
@@ -726,11 +727,13 @@ export default function App() {
         // In batch select mode, if clicking on already selected layer, don't toggle yet
         // We'll handle toggle in pointerUp if no drag occurred
         if (!newSelectedIds.has(layerId)) {
+          // Clicking an unselected layer: add it to selection immediately
           newSelectedIds.add(layerId);
           setSelectedIds(newSelectedIds);
+        } else {
+          // Clicking an already selected layer: store for potential toggle on pointer up
+          dragState.current.clickedLayerId = layerId;
         }
-        // Store the clicked layer ID for potential toggle on pointer up
-        dragState.current.clickedLayerId = layerId;
       } else {
         // In single select mode:
         // - If clicking an already selected layer, keep the current selection (allows dragging multiple selected layers)
@@ -918,7 +921,16 @@ export default function App() {
       );
 
       const newSelectedIds = new Set(selectedIds);
-      selectedLayers.forEach(layer => newSelectedIds.add(layer.id));
+
+      // Check if Alt key was held during selection (deselect mode)
+      if (e.altKey) {
+        // Remove selected layers from selection
+        selectedLayers.forEach(layer => newSelectedIds.delete(layer.id));
+      } else {
+        // Add selected layers to selection
+        selectedLayers.forEach(layer => newSelectedIds.add(layer.id));
+      }
+
       setSelectedIds(newSelectedIds);
     }
 
@@ -1162,10 +1174,26 @@ export default function App() {
           const target = e.target as HTMLElement;
           const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 
-          // Ctrl+Z / Cmd+Z for undo/redo
+          // Track Alt key state
+          if (e.key === 'Alt') {
+              setIsAltKeyPressed(true);
+          }
+
+          // Ctrl+Z / Cmd+Z for undo
+          // Ctrl+Shift+Z / Cmd+Shift+Z for redo
           if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
               e.preventDefault();
               if (e.shiftKey) redo(); else undo();
+          }
+          // Ctrl+Y / Cmd+Y for redo (alternative)
+          if ((e.metaKey || e.ctrlKey) && e.key === 'y') {
+              e.preventDefault();
+              redo();
+          }
+          // Ctrl+A / Cmd+A for select all
+          if ((e.metaKey || e.ctrlKey) && e.key === 'a' && !isInputField) {
+              e.preventDefault();
+              selectAllLayers();
           }
           // Ctrl+D / Cmd+D for deselect all
           if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
@@ -1182,9 +1210,21 @@ export default function App() {
               if (selectedIds.size > 0) deleteSelected();
           }
       };
+
+      const handleKeyUp = (e: KeyboardEvent) => {
+          // Track Alt key state
+          if (e.key === 'Alt') {
+              setIsAltKeyPressed(false);
+          }
+      };
+
       window.addEventListener('keydown', handleKeyDown);
-      return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [layers, selectedIds, history, historyIndex]);
+      window.addEventListener('keyup', handleKeyUp);
+      return () => {
+          window.removeEventListener('keydown', handleKeyDown);
+          window.removeEventListener('keyup', handleKeyUp);
+      };
+  }, [layers, selectedIds, history, historyIndex, undo, redo, deleteSelected, selectAllLayers]);
 
   // --- Click Outside to close Popovers ---
   useEffect(() => {
@@ -1333,6 +1373,7 @@ export default function App() {
                 const containerRect = canvasContainerRef.current?.getBoundingClientRect();
                 if (!containerRect) return null;
                 const box = selectionBox;
+                const isDeselectMode = isAltKeyPressed;
                 return (
                     <div
                         className="absolute pointer-events-none z-20"
@@ -1341,9 +1382,11 @@ export default function App() {
                             top: Math.min(box.startY, box.endY) - containerRect.top,
                             width: Math.abs(box.endX - box.startX),
                             height: Math.abs(box.endY - box.startY),
-                            border: '4px dashed #3b82f6',
-                            backgroundColor: 'rgba(59, 130, 246, 0.5)',
-                            boxShadow: '0 0 20px rgba(59, 130, 246, 0.8), inset 0 0 20px rgba(59, 130, 246, 0.3)'
+                            border: isDeselectMode ? '4px dashed #ef4444' : '4px dashed #3b82f6',
+                            backgroundColor: isDeselectMode ? 'rgba(239, 68, 68, 0.5)' : 'rgba(59, 130, 246, 0.5)',
+                            boxShadow: isDeselectMode
+                              ? '0 0 20px rgba(239, 68, 68, 0.8), inset 0 0 20px rgba(239, 68, 68, 0.3)'
+                              : '0 0 20px rgba(59, 130, 246, 0.8), inset 0 0 20px rgba(59, 130, 246, 0.3)'
                         }}
                     />
                 );
