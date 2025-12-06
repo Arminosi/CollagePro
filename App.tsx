@@ -732,9 +732,16 @@ export default function App() {
         // Store the clicked layer ID for potential toggle on pointer up
         dragState.current.clickedLayerId = layerId;
       } else {
-        // In single select mode, always set selection to only the clicked layer
-        newSelectedIds = new Set([layerId]);
-        setSelectedIds(newSelectedIds);
+        // In single select mode:
+        // - If clicking an already selected layer, keep the current selection (allows dragging multiple selected layers)
+        // - If clicking an unselected layer, switch to selecting only that layer
+        // - Exception: When resizing, always select only the target layer
+        if (handle || !newSelectedIds.has(layerId)) {
+          // Clicking an unselected layer OR clicking a resize handle: select only this layer
+          newSelectedIds = new Set([layerId]);
+          setSelectedIds(newSelectedIds);
+        }
+        // If clicking an already selected layer (and not resizing), keep current selection
       }
 
       const initialLayersMap: Record<string, Rect> = {};
@@ -1460,9 +1467,9 @@ export default function App() {
                                     animate={{ opacity: 1, scale: 1, y: 0 }}
                                     exit={{ opacity: 0, scale: 0.95, y: 10 }}
                                     className={`bg-surface border border-slate-700 rounded-xl shadow-xl p-3 z-50 flex flex-col gap-3 overflow-y-auto custom-scrollbar
-                                        absolute w-64 max-h-[calc(100vh-180px)]
-                                        md:bottom-full md:right-0 md:mb-3
-                                        max-md:left-full max-md:top-0 max-md:ml-2
+                                        absolute w-64
+                                        md:bottom-full md:right-0 md:mb-3 md:max-h-[calc(100vh-180px)]
+                                        max-md:left-full max-md:top-1/2 max-md:-translate-y-1/2 max-md:ml-2 max-md:max-h-[calc(100vh-100px)]
                                     `}
                                     onClick={(e) => e.stopPropagation()}
                                 >
