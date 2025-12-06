@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import React from 'react';
-import { Trash2, ArrowUp, ArrowDown, Download, Maximize, Layers } from 'lucide-react';
+import { Trash2, ArrowUp, ArrowDown, Download, Maximize, Layers, X } from 'lucide-react';
 import { Language } from '../types';
 import { translations } from '../utils/i18n';
 
@@ -16,6 +16,7 @@ interface ContextMenuProps {
   lang: Language;
   onFitView?: () => void;
   onSelectAll?: () => void;
+  onDeselectAll?: () => void;
 }
 
 export const ContextMenu: React.FC<ContextMenuProps> = ({
@@ -29,10 +30,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   hasSelection,
   lang,
   onFitView,
-  onSelectAll
+  onSelectAll,
+  onDeselectAll
 }) => {
   const t = translations[lang];
-  const [confirmSelectAll, setConfirmSelectAll] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
 
   React.useEffect(() => {
     const handleClick = () => onClose();
@@ -67,26 +69,31 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               </button>
             )}
             {onSelectAll && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (confirmSelectAll) {
-                    onSelectAll();
-                    onClose();
-                    setConfirmSelectAll(false);
-                  } else {
-                    setConfirmSelectAll(true);
-                  }
-                }}
-                className={`flex items-center px-4 py-2 hover:bg-slate-700 text-left transition-colors ${confirmSelectAll ? 'bg-blue-900/50 text-blue-300' : ''}`}
-              >
-                <Layers className="w-4 h-4 mr-2" />
-                {confirmSelectAll ? (lang === 'zh' ? '确认全选？' : 'Confirm Select All?') : t.selectAll}
+              <button onClick={() => { onSelectAll(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+                <Layers className="w-4 h-4 mr-2" /> {t.selectAll}
+              </button>
+            )}
+            {onDeselectAll && (
+              <button onClick={() => { onDeselectAll(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+                <X className="w-4 h-4 mr-2" /> {t.deselectAll}
               </button>
             )}
             <div className="h-px bg-slate-700 my-1" />
-            <button onClick={() => { onDelete(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-red-900/50 text-red-400 text-left">
-              <Trash2 className="w-4 h-4 mr-2" /> {t.delete}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (confirmDelete) {
+                  onDelete();
+                  onClose();
+                  setConfirmDelete(false);
+                } else {
+                  setConfirmDelete(true);
+                }
+              }}
+              className={`flex items-center px-4 py-2 hover:bg-red-900/50 text-left transition-colors ${confirmDelete ? 'bg-red-900/50 text-red-300' : 'text-red-400'}`}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {confirmDelete ? (lang === 'zh' ? '确认删除？' : 'Confirm Delete?') : t.delete}
             </button>
           </>
         ) : (
@@ -97,21 +104,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               </button>
             )}
             {onSelectAll && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (confirmSelectAll) {
-                    onSelectAll();
-                    onClose();
-                    setConfirmSelectAll(false);
-                  } else {
-                    setConfirmSelectAll(true);
-                  }
-                }}
-                className={`flex items-center px-4 py-2 hover:bg-slate-700 text-left transition-colors ${confirmSelectAll ? 'bg-blue-900/50 text-blue-300' : ''}`}
-              >
-                <Layers className="w-4 h-4 mr-2" />
-                {confirmSelectAll ? (lang === 'zh' ? '确认全选？' : 'Confirm Select All?') : t.selectAll}
+              <button onClick={() => { onSelectAll(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+                <Layers className="w-4 h-4 mr-2" /> {t.selectAll}
               </button>
             )}
           </>

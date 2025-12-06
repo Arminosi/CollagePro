@@ -11,7 +11,7 @@ import {
   Magnet, Scaling, Menu, LayoutGrid,
   AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignEndVertical, AlignVerticalJustifyCenter,
   AlignVerticalJustifyCenter as VStitchIcon, AlignHorizontalJustifyCenter as HStitchIcon, Wand2,
-  Layers, Combine, Info, MoreHorizontal, MousePointer, X, ChevronUp, ChevronDown, ArrowLeftRight
+  Layers, Combine, Info, MoreHorizontal, MousePointer, X, ChevronUp, ChevronDown, ArrowLeftRight, HelpCircle, Keyboard
 } from 'lucide-react';
 import { translations } from './utils/i18n';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -110,7 +110,8 @@ export default function App() {
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
-  
+  const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
+
   // UI States
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [layerPanelPos, setLayerPanelPos] = useState({ x: window.innerWidth - 260, y: 80 });
@@ -187,7 +188,7 @@ export default function App() {
   }, [history, historyIndex]);
 
   // --- Image Handling ---
-  const processFiles = (files: File[]) => {
+  const processFiles = (files: File[], dropPosition?: { x: number; y: number }) => {
       // Remember if this is the first import (canvas is empty)
       const isFirstImport = layers.length === 0;
 
@@ -208,7 +209,8 @@ export default function App() {
             const aspectRatio = img.width / img.height;
             const baseSize = 300;
 
-            const viewportCenter = {
+            // Use drop position if provided, otherwise use viewport center
+            const centerPosition = dropPosition || {
                 x: -pan.x + (window.innerWidth / 2) / zoom,
                 y: -pan.y + (window.innerHeight / 2) / zoom
             };
@@ -216,8 +218,8 @@ export default function App() {
             newLayers.push({
               id: Math.random().toString(36).substr(2, 9),
               src: ev.target?.result as string,
-              x: viewportCenter.x - 150 + (count * 20),
-              y: viewportCenter.y - 150 + (count * 20),
+              x: centerPosition.x - 150 + (count * 20),
+              y: centerPosition.y - 150 + (count * 20),
               width: baseSize,
               height: baseSize / aspectRatio,
               zIndex: count,
@@ -295,7 +297,9 @@ export default function App() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        processFiles(Array.from(e.dataTransfer.files));
+        // Get drop position in canvas coordinates
+        const coords = getCanvasCoordinates(e as any);
+        processFiles(Array.from(e.dataTransfer.files), coords);
     }
   };
 
@@ -1257,12 +1261,12 @@ export default function App() {
 
           // Ctrl+Z / Cmd+Z for undo
           // Ctrl+Shift+Z / Cmd+Shift+Z for redo
-          if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
               e.preventDefault();
               if (e.shiftKey) redo(); else undo();
           }
           // Ctrl+Y / Cmd+Y for redo (alternative)
-          if ((e.metaKey || e.ctrlKey) && e.key === 'y') {
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
               e.preventDefault();
               redo();
           }
@@ -1294,11 +1298,18 @@ export default function App() {
           }
       };
 
+      // Reset Alt key state when window loses focus (fixes Alt+Tab issue)
+      const handleBlur = () => {
+          setIsAltKeyPressed(false);
+      };
+
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('keyup', handleKeyUp);
+      window.addEventListener('blur', handleBlur);
       return () => {
           window.removeEventListener('keydown', handleKeyDown);
           window.removeEventListener('keyup', handleKeyUp);
+          window.removeEventListener('blur', handleBlur);
       };
   }, [layers, selectedIds, history, historyIndex, undo, redo, deleteSelected, selectAllLayers]);
 
@@ -2069,10 +2080,117 @@ export default function App() {
                     lang={lang}
                     onFitView={() => handleFitView()}
                     onSelectAll={selectAllLayers}
+                    onDeselectAll={() => setSelectedIds(new Set())}
                 />
             )}
+
+            {/* Shortcuts Guide Button (Desktop only, bottom-right corner) */}
+            <div className="hidden md:block fixed bottom-6 right-6 z-40">
+                <div
+                    className="relative group"
+                    onMouseEnter={() => setShowShortcutsGuide(true)}
+                    onMouseLeave={() => setShowShortcutsGuide(false)}
+                >
+                    {/* Button */}
+                    <button
+                        className="w-12 h-12 bg-surface/95 backdrop-blur-xl border border-slate-700/50 shadow-xl rounded-full flex items-center justify-center text-slate-400 hover:text-primary hover:border-primary/50 transition-all duration-200"
+                        title={translations[lang].shortcuts}
+                    >
+                        <Keyboard className="w-5 h-5" />
+                    </button>
+
+                    {/* Shortcuts Panel */}
+                    <AnimatePresence>
+                        {showShortcutsGuide && (
+                            <motion.div
+                                initial={{ opacity: 0, scale: 0.95, x: 20 }}
+                                animate={{ opacity: 1, scale: 1, x: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, x: 20 }}
+                                className="absolute bottom-full right-0 mb-3 w-80 bg-surface border border-slate-700 rounded-xl shadow-2xl p-4 overflow-y-auto max-h-[calc(100vh-120px)]"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                {/* Title */}
+                                <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-700">
+                                    <Keyboard className="w-5 h-5 text-primary" />
+                                    <h3 className="text-sm font-bold text-white">{translations[lang].shortcuts}</h3>
+                                </div>
+
+                                {/* Keyboard Shortcuts Section */}
+                                <div className="mb-4">
+                                    <h4 className="text-xs font-semibold text-slate-400 uppercase mb-2">{translations[lang].shortcutsTitle}</h4>
+                                    <div className="space-y-1.5">
+                                        <ShortcutItem label={translations[lang].shortcutUndo} keys={["Ctrl", "Z"]} />
+                                        <ShortcutItem label={translations[lang].shortcutRedo} keys={["Ctrl", "Shift", "Z"]} altKeys={["Ctrl", "Y"]} />
+                                        <ShortcutItem label={translations[lang].shortcutSelectAll} keys={["Ctrl", "A"]} />
+                                        <ShortcutItem label={translations[lang].shortcutDeselect} keys={["Ctrl", "D"]} />
+                                        <ShortcutItem label={translations[lang].shortcutDelete} keys={["Del"]} altKeys={["Backspace"]} />
+                                        <ShortcutItem label={translations[lang].shortcutBatchSelect} keys={["V"]} />
+                                    </div>
+                                </div>
+
+                                {/* Mouse Operations Section */}
+                                <div>
+                                    <h4 className="text-xs font-semibold text-slate-400 uppercase mb-2">{translations[lang].mouseTitle}</h4>
+                                    <div className="space-y-1.5">
+                                        <ShortcutItem label={translations[lang].mousePan} keys={["Space + Drag"]} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseDrag} keys={["Click + Drag"]} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseAltDrag} keys={["Alt + Drag"]} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseResize} keys={["Corner + Drag"]} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseBoxSelect} keys={["V + Drag"]} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseAltBox} keys={["V + Alt + Drag"]} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseWheel} keys={["Scroll"]} isMouseOp />
+                                    </div>
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+            </div>
           </div>
       </div>
     </div>
   );
 }
+
+// Helper component for shortcut items
+const ShortcutItem: React.FC<{
+    label: string;
+    keys: string[];
+    altKeys?: string[];
+    isMouseOp?: boolean;
+}> = ({ label, keys, altKeys, isMouseOp = false }) => (
+    <div className="flex items-center justify-between text-xs">
+        <span className="text-slate-300">{label}</span>
+        <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5">
+                {keys.map((key, i) => (
+                    <React.Fragment key={i}>
+                        <kbd className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                            isMouseOp
+                                ? 'bg-slate-700 text-slate-300 border border-slate-600'
+                                : 'bg-slate-800 text-primary border border-primary/30'
+                        }`}>
+                            {key}
+                        </kbd>
+                        {i < keys.length - 1 && <span className="text-slate-500 text-[10px] mx-0.5">+</span>}
+                    </React.Fragment>
+                ))}
+            </div>
+            {altKeys && (
+                <>
+                    <span className="text-slate-600 text-[10px] mx-1">/</span>
+                    <div className="flex items-center gap-0.5">
+                        {altKeys.map((key, i) => (
+                            <React.Fragment key={i}>
+                                <kbd className="px-1.5 py-0.5 bg-slate-800 text-primary border border-primary/30 rounded text-[10px] font-mono">
+                                    {key}
+                                </kbd>
+                                {i < altKeys.length - 1 && <span className="text-slate-500 text-[10px] mx-0.5">+</span>}
+                            </React.Fragment>
+                        ))}
+                    </div>
+                </>
+            )}
+        </div>
+    </div>
+);
