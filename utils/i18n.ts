@@ -94,7 +94,22 @@ export const translations: Record<Language, Record<string, string>> = {
     mouseResize: "Resize Layer",
     mouseBoxSelect: "Box Select (Batch Mode)",
     mouseAltBox: "Box Deselect (Batch Mode)",
-    mouseWheel: "Zoom In/Out"
+    mouseWheel: "Zoom In/Out",
+    exportVersion: "Export Version Package",
+    localDataWarning: "All data is stored in local browser cache. Please download canvas data in time to avoid loss!",
+    exportVersionTooltip: "Export this version as a zip package containing all layer images and canvas configuration",
+    importVersion: "Import Version Package",
+    clearAllVersions: "Clear All Versions",
+    clearAllVersionsConfirm: "Are you sure you want to delete all saved versions? This cannot be undone!",
+    autoSave: "Auto Save",
+    manualSave: "Manual Save",
+    exportPSD: "Export PSD",
+    importPSD: "Import PSD",
+    saveManually: "Save Version",
+    saveManuallyTooltip: "Manually save current canvas state (Ctrl+S)",
+    filterAll: "All",
+    filterManual: "Manual",
+    filterAuto: "Auto"
   },
   zh: {
     tools: "工具箱",
@@ -188,6 +203,21 @@ export const translations: Record<Language, Record<string, string>> = {
     mouseResize: "调整大小",
     mouseBoxSelect: "框选图层（批量模式）",
     mouseAltBox: "框选取消（批量模式）",
-    mouseWheel: "缩放画布"
+    mouseWheel: "缩放画布",
+    exportVersion: "导出版本包",
+    localDataWarning: "所有数据都存在本地缓存，请及时下载画布信息以防丢失！",
+    exportVersionTooltip: "将此版本导出为压缩包，包含所有图层图片和画布配置信息",
+    importVersion: "导入版本包",
+    clearAllVersions: "清空所有版本",
+    clearAllVersionsConfirm: "确定要删除所有已保存的版本吗?此操作无法撤销!",
+    autoSave: "自动保存",
+    manualSave: "手动保存",
+    exportPSD: "导出PSD",
+    importPSD: "导入PSD",
+    saveManually: "保存版本",
+    saveManuallyTooltip: "手动保存当前画布状态 (Ctrl+S)",
+    filterAll: "全部",
+    filterManual: "手动",
+    filterAuto: "自动"
   }
 };

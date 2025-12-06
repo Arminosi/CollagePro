@@ -42,6 +42,14 @@ export interface SavedVersion {
   timestamp: number;
   layers: CanvasLayer[];
   thumbnail?: string;
+  saveType: 'manual' | 'auto'; // manual: user export or Ctrl+S, auto: auto-save every 1 minute
+  exportData?: {
+    images: { id: string; name: string; dataUrl: string }[];
+    canvasInfo: {
+      layers: CanvasLayer[];
+      settings?: Partial<AppSettings>;
+    };
+  };
 }
 
 export type Point = { x: number; y: number };

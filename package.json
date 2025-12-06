@@ -9,8 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "ag-psd": "^29.0.0",
     "dom": "^0.0.3",
     "framer-motion": "^11.0.8",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.555.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
