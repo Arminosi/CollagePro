@@ -11,6 +11,7 @@ export const translations: Record<Language, Record<string, string>> = {
     actions: "Actions",
     uploadText: "Click to upload images",
     uploadSubtext: "or drag & drop anywhere",
+    uploadSubtextWithPSD: "or drag & drop anywhere (supports PSD)",
     tipTitle: "Tip:",
     tipBeforeShift: "Hold",
     tipAfterShift: "to select multiple images. Right click for more options.",
@@ -109,7 +110,13 @@ export const translations: Record<Language, Record<string, string>> = {
     saveManuallyTooltip: "Manually save current canvas state (Ctrl+S)",
     filterAll: "All",
     filterManual: "Manual",
-    filterAuto: "Auto"
+    filterAuto: "Auto",
+    exportVersionPSD: "Export PSD",
+    clearAllVersionsHint: "Click again to confirm",
+    importPSDSuccess: "Successfully imported",
+    importPSDFailed: "Failed to import PSD",
+    importVersionSuccess: "Successfully imported",
+    importVersionFailed: "Failed to import version package"
   },
   zh: {
     tools: "工具箱",
@@ -120,6 +127,7 @@ export const translations: Record<Language, Record<string, string>> = {
     actions: "操作",
     uploadText: "点击上传图片",
     uploadSubtext: "或拖拽图片到此处",
+    uploadSubtextWithPSD: "或拖拽图片到此处 (支持PSD)",
     tipTitle: "提示:",
     tipBeforeShift: "按住",
     tipAfterShift: "键多选图片。右键点击查看更多选项。",
@@ -218,6 +226,12 @@ export const translations: Record<Language, Record<string, string>> = {
     saveManuallyTooltip: "手动保存当前画布状态 (Ctrl+S)",
     filterAll: "全部",
     filterManual: "手动",
-    filterAuto: "自动"
+    filterAuto: "自动",
+    exportVersionPSD: "导出PSD",
+    clearAllVersionsHint: "再次点击确认",
+    importPSDSuccess: "成功导入",
+    importPSDFailed: "导入PSD失败",
+    importVersionSuccess: "成功导入",
+    importVersionFailed: "导入版本包失败"
   }
 };

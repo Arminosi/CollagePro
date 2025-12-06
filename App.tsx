@@ -105,7 +105,7 @@ export default function App() {
   const [versions, setVersions] = useState<SavedVersion[]>([]);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth < 768); // Mobile: open by default, desktop: closed by default
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true); // Desktop and mobile: open by default
   const [lang, setLang] = useState<Language>('zh');
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
@@ -113,6 +113,13 @@ export default function App() {
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
   const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  // Toast notification helper
+  const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
 
   // UI States
   const [showLayerPanel, setShowLayerPanel] = useState(false);
@@ -1245,9 +1252,9 @@ export default function App() {
 
     setVersions(prev => {
       const updated = [newVersion, ...prev];
-      // Keep max 50 versions (30 auto + 20 manual)
-      const manualVersions = updated.filter(v => v.saveType === 'manual').slice(0, 20);
-      const autoVersions = updated.filter(v => v.saveType === 'auto').slice(0, 30);
+      // Keep max 100 versions (50 auto + 50 manual)
+      const manualVersions = updated.filter(v => v.saveType === 'manual').slice(0, 50);
+      const autoVersions = updated.filter(v => v.saveType === 'auto').slice(0, 50);
       return [...manualVersions, ...autoVersions].sort((a, b) => b.timestamp - a.timestamp);
     });
 
@@ -1255,8 +1262,8 @@ export default function App() {
       const stored = localStorage.getItem('collage_versions');
       const parsed = stored ? JSON.parse(stored) : [];
       const updated = [newVersion, ...parsed];
-      const manualVersions = updated.filter((v: SavedVersion) => v.saveType === 'manual').slice(0, 20);
-      const autoVersions = updated.filter((v: SavedVersion) => v.saveType === 'auto').slice(0, 30);
+      const manualVersions = updated.filter((v: SavedVersion) => v.saveType === 'manual').slice(0, 50);
+      const autoVersions = updated.filter((v: SavedVersion) => v.saveType === 'auto').slice(0, 50);
       const final = [...manualVersions, ...autoVersions].sort((a: SavedVersion, b: SavedVersion) => b.timestamp - a.timestamp);
       localStorage.setItem('collage_versions', JSON.stringify(final));
     } catch (e) {
@@ -1415,24 +1422,32 @@ To restore this version:
       }
 
       if (newLayers.length > 0) {
-        setLayers(newLayers);
-        pushHistory(newLayers);
-        alert(`Successfully imported ${newLayers.length} layers!`);
+        // Update zIndex to place new layers on top
+        const updatedNewLayers = newLayers.map((layer, index) => ({
+          ...layer,
+          zIndex: layers.length + index
+        }));
+
+        const allLayers = [...layers, ...updatedNewLayers];
+        setLayers(allLayers);
+        pushHistory(allLayers);
+        showToast(`${translations[lang].importVersionSuccess || 'Successfully imported'} ${newLayers.length} ${translations[lang].layersCount}`, 'success');
       }
     } catch (error) {
       console.error('Error importing version package:', error);
-      alert('Failed to import version package. Please try again.');
+      showToast(translations[lang].importVersionFailed || 'Failed to import version package', 'error');
     }
   };
 
   // Export as PSD
-  const exportAsPSD = async () => {
+  const exportAsPSD = async (version?: SavedVersion) => {
     try {
-      if (layers.length === 0) return;
+      const exportLayers = version ? version.layers : layers;
+      if (exportLayers.length === 0) return;
 
       // Calculate canvas bounds
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      layers.forEach(l => {
+      exportLayers.forEach(l => {
         minX = Math.min(minX, l.x);
         minY = Math.min(minY, l.y);
         maxX = Math.max(maxX, l.x + l.width);
@@ -1443,7 +1458,7 @@ To restore this version:
       const height = Math.ceil(maxY - minY);
 
       // Create PSD layers
-      const psdLayers = await Promise.all(layers.map(async (layer) => {
+      const psdLayers = await Promise.all(exportLayers.map(async (layer) => {
         const img = new Image();
         img.crossOrigin = 'anonymous';
         await new Promise((resolve, reject) => {
@@ -1479,7 +1494,9 @@ To restore this version:
       const blob = new Blob([buffer], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.download = `collage-${Date.now()}.psd`;
+      link.download = version
+        ? `collagepro_version_${version.id}.psd`
+        : `collage-${Date.now()}.psd`;
       link.href = url;
       link.click();
       URL.revokeObjectURL(url);
@@ -1522,13 +1539,20 @@ To restore this version:
       }
 
       if (newLayers.length > 0) {
-        setLayers(newLayers);
-        pushHistory(newLayers);
-        alert(`Successfully imported ${newLayers.length} layers from PSD!`);
+        // Update zIndex to place new layers on top
+        const updatedNewLayers = newLayers.map((layer, index) => ({
+          ...layer,
+          zIndex: layers.length + index
+        }));
+
+        const allLayers = [...layers, ...updatedNewLayers];
+        setLayers(allLayers);
+        pushHistory(allLayers);
+        showToast(`${translations[lang].importPSDSuccess || 'Successfully imported'} ${newLayers.length} ${translations[lang].layersCount}`, 'success');
       }
     } catch (error) {
       console.error('Error importing PSD:', error);
-      alert('Failed to import PSD. Please try again.');
+      showToast(translations[lang].importPSDFailed || 'Failed to import PSD', 'error');
     }
   };
 
@@ -1537,6 +1561,17 @@ To restore this version:
     if (confirm(translations[lang].clearAllVersionsConfirm)) {
       setVersions([]);
       localStorage.removeItem('collage_versions');
+    }
+  };
+
+  // Delete a single version
+  const deleteVersion = (versionId: string) => {
+    const updatedVersions = versions.filter(v => v.id !== versionId);
+    setVersions(updatedVersions);
+    try {
+      localStorage.setItem('collage_versions', JSON.stringify(updatedVersions));
+    } catch (e) {
+      console.warn("Local storage error");
     }
   };
 
@@ -1643,6 +1678,40 @@ To restore this version:
     return () => document.removeEventListener('wheel', preventBrowserZoom);
   }, []);
 
+  // Handle wheel zoom on canvas container
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Mouse wheel for zoom (no Ctrl needed)
+      // Ctrl+Wheel still supported for compatibility
+      e.preventDefault();
+      const containerRect = container.getBoundingClientRect();
+
+      // Mouse position relative to container
+      const mouseX = e.clientX - containerRect.left;
+      const mouseY = e.clientY - containerRect.top;
+
+      // Calculate new zoom level
+      const zoomDelta = -e.deltaY * 0.001;
+      const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
+      const zoomRatio = newZoom / zoom;
+
+      // Adjust pan to keep the point under the mouse fixed
+      // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
+      const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
+      const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+
+      setZoom(newZoom);
+      setPan({ x: newPanX, y: newPanY });
+    };
+
+    // Use passive: false to allow preventDefault
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [zoom, pan]);
+
   // Compute background style
   const backgroundStyle = settings.backgroundMode === 'solid' 
       ? (settings.previewBackground ? settings.backgroundColor : '#0f172a')
@@ -1705,10 +1774,12 @@ To restore this version:
             versions={versions}
             onLoadVersion={loadVersion}
             onExportVersion={exportVersionPackage}
+            onExportVersionPSD={exportAsPSD}
             onImportVersion={importVersionPackage}
             onImportPSD={importPSD}
-            onExportPSD={exportAsPSD}
+            onExportPSD={() => exportAsPSD()}
             onClearAllVersions={clearAllVersions}
+            onDeleteVersion={deleteVersion}
             onManualSave={handleManualSave}
             isOpen={isSidebarOpen}
             lang={lang}
@@ -1734,30 +1805,6 @@ To restore this version:
                 // Right-click on background clears selection
                 setSelectedIds(new Set());
                 setContextMenu({ x: e.clientX, y: e.clientY });
-            }}
-            onWheel={(e) => {
-                // Mouse wheel for zoom (no Ctrl needed)
-                // Ctrl+Wheel still supported for compatibility
-                e.preventDefault();
-                const containerRect = canvasContainerRef.current?.getBoundingClientRect();
-                if (!containerRect) return;
-
-                // Mouse position relative to container
-                const mouseX = e.clientX - containerRect.left;
-                const mouseY = e.clientY - containerRect.top;
-
-                // Calculate new zoom level
-                const zoomDelta = -e.deltaY * 0.001;
-                const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
-                const zoomRatio = newZoom / zoom;
-
-                // Adjust pan to keep the point under the mouse fixed
-                // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
-                const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
-                const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
-
-                setZoom(newZoom);
-                setPan({ x: newPanX, y: newPanY });
             }}
           >
             {/* Grid */}
@@ -2462,6 +2509,24 @@ To restore this version:
                     </AnimatePresence>
                 </div>
             </div>
+
+            {/* Toast Notification */}
+            <AnimatePresence>
+                {toast && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -20 }}
+                        className={`fixed top-20 left-1/2 -translate-x-1/2 z-70 px-6 py-3 rounded-lg shadow-2xl border flex items-center gap-3 ${
+                            toast.type === 'success'
+                                ? 'bg-emerald-600 border-emerald-500 text-white'
+                                : 'bg-red-600 border-red-500 text-white'
+                        }`}
+                    >
+                        <span className="text-sm font-medium">{toast.message}</span>
+                    </motion.div>
+                )}
+            </AnimatePresence>
           </div>
       </div>
     </div>
