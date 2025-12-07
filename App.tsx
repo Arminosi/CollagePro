@@ -6,8 +6,24 @@ import { writePsd, readPsd } from 'ag-psd';
 import { Sidebar } from './components/Sidebar';
 import { LayerPanel } from './components/LayerPanel';
 import { ContextMenu } from './components/ContextMenu';
+import { TooltipButton } from './components/TooltipButton';
+import { ShortcutItem } from './components/ShortcutItem';
 import { CanvasLayer, AppSettings, DragState, SavedVersion, Rect, Language } from './types';
 import { getSnapLines, resizeLayer, getSnapDelta, SnapGuide } from './utils/geometry';
+import { INITIAL_SETTINGS } from './constants';
+import { useHistory, useKeyboardShortcuts } from './hooks';
+import {
+  duplicateLayer as duplicateLayerUtil,
+  deleteLayers as deleteLayersUtil,
+  bringToFront as bringToFrontUtil,
+  sendToBack as sendToBackUtil,
+  selectAllLayers as selectAllLayersUtil,
+  clearCanvas as clearCanvasUtil
+} from './utils/layerOperations';
+import { generateExportUrl, downloadImage, calculateGridDimension } from './utils/exportUtils';
+import { handleAlign as handleAlignUtil, handleAutoStitch as handleAutoStitchUtil } from './utils/alignmentUtils';
+import { handleGridLayout as handleGridLayoutUtil } from './utils/gridLayoutUtils';
+import { getCanvasCoordinates, zoomAtPoint as zoomAtPointUtil, handleFitView as handleFitViewUtil, getBackgroundStyle } from './utils/canvasUtils';
 import {
   Undo, Redo, Download, ZoomIn, ZoomOut, Maximize, Languages,
   Magnet, Scaling, Menu, LayoutGrid,
@@ -18,94 +34,16 @@ import {
 import { translations } from './utils/i18n';
 import { AnimatePresence, motion } from 'framer-motion';
 
-const INITIAL_SETTINGS: AppSettings = {
-  snapToGrid: true,
-  snapThreshold: 10,
-  keepAspectRatio: true,
-  showGuides: true,
-  stitchGap: 0,
-  smartStitch: false,
-  stitchScope: 'all',
-  backgroundMode: 'grid',
-  backgroundColor: '#ffffff',
-  previewBackground: true,
-  gridRows: 2,
-  gridCols: 2,
-  autoCalcGrid: true,
-  gridDirection: 'horizontal',
-  gridReverse: false
-};
-
-// --- Helper Components ---
-
-interface TooltipButtonProps { 
-  title: string; 
-  onClick: () => void; 
-  icon: React.ElementType; 
-  active?: boolean; 
-  disabled?: boolean; 
-  className?: string;
-  tooltipContent?: React.ReactNode;
-}
-
-const TooltipButton = React.forwardRef<HTMLButtonElement, TooltipButtonProps>(({ 
-  title, 
-  onClick, 
-  icon: Icon, 
-  active, 
-  disabled, 
-  className,
-  tooltipContent 
-}, ref) => (
-  <div className="relative group flex items-center justify-center">
-    <button
-      ref={ref}
-      onClick={onClick}
-      disabled={disabled}
-      className={`
-        p-2.5 rounded-xl transition-all duration-200 outline-none flex items-center justify-center
-        ${active 
-          ? 'bg-primary text-white shadow-lg shadow-primary/25 ring-0' 
-          : 'text-slate-400 hover:text-white hover:bg-slate-700/80 active:bg-slate-700'
-        } 
-        ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'} 
-        ${className || ''}
-      `}
-    >
-      <Icon className="w-5 h-5" />
-    </button>
-    {/* Tooltip */}
-    {!disabled && (
-        <div className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none
-        px-3 py-2 bg-slate-900 text-white text-xs font-medium rounded-lg border border-slate-700/50 whitespace-nowrap z-60 shadow-xl
-        md:-top-14 md:left-1/2 md:-translate-x-1/2
-        max-md:left-full max-md:ml-3 max-md:top-1/2 max-md:-translate-y-1/2
-        ">
-        <div className="font-semibold mb-0.5">{title}</div>
-        {tooltipContent && <div className="text-slate-400 text-[10px] max-w-[150px] whitespace-normal leading-tight">{tooltipContent}</div>}
-        
-        {/* Arrow for tooltip */}
-        <div className="absolute w-2 h-2 bg-slate-900 border-l border-b border-slate-700/50 rotate-45 
-            md:-bottom-1 md:left-1/2 md:-translate-x-1/2 md:border-l-0 md:border-t-0 md:border-r md:border-b
-            max-md:left-[-5px] max-md:top-1/2 max-md:-translate-y-1/2
-        "></div>
-        </div>
-    )}
-  </div>
-));
-TooltipButton.displayName = 'TooltipButton';
 
 export default function App() {
   // --- State ---
   const [layers, setLayers] = useState<CanvasLayer[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS);
-  const [history, setHistory] = useState<CanvasLayer[][]>([[]]);
-  const [historyIndex, setHistoryIndex] = useState(0);
   const [versions, setVersions] = useState<SavedVersion[]>([]);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true); // Desktop and mobile: open by default
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [lang, setLang] = useState<Language>('zh');
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
@@ -125,7 +63,7 @@ export default function App() {
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [layerPanelPos, setLayerPanelPos] = useState({ x: window.innerWidth - 260, y: 80 });
   const [layerPanelAlign, setLayerPanelAlign] = useState<'top-left' | 'bottom-left'>('top-left');
-  const [activeMenu, setActiveMenu] = useState<string | null>(null); // 'stitch', 'align', 'more'
+  const [activeMenu, setActiveMenu] = useState<string | null>(null);
 
   // --- Refs ---
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -150,7 +88,7 @@ export default function App() {
     pinchStartZoom: number;
     pinchCenter: { x: number; y: number };
     isAltDragging: boolean;
-    clonedLayerIds: Record<string, string>; // Maps original ID to cloned ID
+    clonedLayerIds: Record<string, string>;
   }>({
     isDragging: false,
     isResizing: false,
@@ -172,29 +110,19 @@ export default function App() {
   
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
 
-  // --- History Management ---
-  const pushHistory = useCallback((newLayers: CanvasLayer[]) => {
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push(newLayers);
-    setHistory(newHistory);
-    setHistoryIndex(newHistory.length - 1);
-  }, [history, historyIndex]);
+  // --- History Management (using custom hook) ---
+  const { pushHistory, undo, redo, canUndo, canRedo } = useHistory([]);
 
-  const undo = useCallback(() => {
-    if (historyIndex > 0) {
-      const prev = history[historyIndex - 1];
-      setLayers(prev);
-      setHistoryIndex(historyIndex - 1);
-    }
-  }, [history, historyIndex]);
+  // Update layers when undo/redo returns new state
+  const handleUndo = useCallback(() => {
+    const prevLayers = undo();
+    if (prevLayers) setLayers(prevLayers);
+  }, [undo]);
 
-  const redo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      const next = history[historyIndex + 1];
-      setLayers(next);
-      setHistoryIndex(historyIndex + 1);
-    }
-  }, [history, historyIndex]);
+  const handleRedo = useCallback(() => {
+    const nextLayers = redo();
+    if (nextLayers) setLayers(nextLayers);
+  }, [redo]);
 
   // --- Image Handling ---
   const processFiles = (files: File[], dropPosition?: { x: number; y: number }) => {
@@ -280,9 +208,7 @@ export default function App() {
                   [rows, cols] = [cols, rows];
                 }
 
-                // Ensure we don't exceed max of 10
-                rows = Math.min(10, rows);
-                cols = Math.min(10, cols);
+                // No maximum limit for rows and cols
 
                 setSettings((prev: AppSettings) => ({...prev, gridRows: rows, gridCols: cols}));
               }
@@ -307,7 +233,7 @@ export default function App() {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         // Get drop position in canvas coordinates
-        const coords = getCanvasCoordinates(e as any);
+        const coords = getCanvasCoordinates(e as any, canvasRef, pan, zoom);
         processFiles(Array.from(e.dataTransfer.files), coords);
     }
   };
@@ -532,7 +458,7 @@ export default function App() {
 
   const handleGridRowsChange = (newRows: number | '') => {
     if (newRows === '') return;
-    const validRows = Math.max(1, Math.min(10, newRows));
+    const validRows = Math.max(1, newRows);
 
     if (settings.autoCalcGrid) {
       // Auto-calculate columns based on total image count
@@ -541,7 +467,7 @@ export default function App() {
         : layers.filter(l => selectedIds.has(l.id)).length;
 
       const newCols = calculateGridDimension(totalImages, validRows, true);
-      setSettings({...settings, gridRows: validRows, gridCols: Math.min(10, newCols)});
+      setSettings({...settings, gridRows: validRows, gridCols: newCols});
     } else {
       setSettings({...settings, gridRows: validRows});
     }
@@ -549,7 +475,7 @@ export default function App() {
 
   const handleGridColsChange = (newCols: number | '') => {
     if (newCols === '') return;
-    const validCols = Math.max(1, Math.min(10, newCols));
+    const validCols = Math.max(1, newCols);
 
     if (settings.autoCalcGrid) {
       // Auto-calculate rows based on total image count
@@ -558,56 +484,17 @@ export default function App() {
         : layers.filter(l => selectedIds.has(l.id)).length;
 
       const newRows = calculateGridDimension(totalImages, validCols, false);
-      setSettings({...settings, gridCols: validCols, gridRows: Math.min(10, newRows)});
+      setSettings({...settings, gridCols: validCols, gridRows: newRows});
     } else {
       setSettings({...settings, gridCols: validCols});
     }
   };
 
   const handleAlign = (type: 'left' | 'center-h' | 'right' | 'top' | 'middle-v' | 'bottom') => {
-      if (selectedIds.size < 2) return;
-      const targetLayers = layers.filter(l => selectedIds.has(l.id));
-      if (targetLayers.length === 0) return;
-
-      // Calculate current bounding box of all selected layers
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      targetLayers.forEach(l => {
-          minX = Math.min(minX, l.x);
-          maxX = Math.max(maxX, l.x + l.width);
-          minY = Math.min(minY, l.y);
-          maxY = Math.max(maxY, l.y + l.height);
-      });
-
-      const centerX = (minX + maxX) / 2;
-      const centerY = (minY + maxY) / 2;
-
-      // Calculate offset to move the entire group
-      let offsetX = 0;
-      let offsetY = 0;
-
-      switch(type) {
-          case 'left': offsetX = -minX; break;
-          case 'center-h': offsetX = -centerX; break;
-          case 'right': offsetX = -minX; break; // Will align to right edge of group, keeping internal spacing
-          case 'top': offsetY = -minY; break;
-          case 'middle-v': offsetY = -centerY; break;
-          case 'bottom': offsetY = -minY; break; // Will align to bottom edge of group, keeping internal spacing
-      }
-
-      // Move all selected layers by the same offset, preserving their relative positions
-      const aligned = targetLayers.map((l: CanvasLayer) => ({
-          ...l,
-          x: l.x + offsetX,
-          y: l.y + offsetY
-      }));
-
-      const finalLayers = layers.map(l => {
-          if (selectedIds.has(l.id)) return aligned.find(a => a.id === l.id) || l;
-          return l;
-      });
-      setLayers(finalLayers);
-      pushHistory(finalLayers);
-      setActiveMenu(null);
+    const newLayers = handleAlignUtil(layers, selectedIds, type);
+    setLayers(newLayers);
+    pushHistory(newLayers);
+    setActiveMenu(null);
   };
 
   const toggleLayerPanel = () => {
@@ -639,75 +526,22 @@ export default function App() {
   
   // --- Fit to View Logic ---
   const handleFitView = (overrideLayers?: CanvasLayer[]) => {
-      const targetLayers = Array.isArray(overrideLayers) ? overrideLayers : layers;
-      
-      if (targetLayers.length === 0) {
-          setZoom(1);
-          setPan({ x: 0, y: 0 });
-          return;
-      }
-
-      // Calculate bounding box of all layers
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      targetLayers.forEach(l => {
-          minX = Math.min(minX, l.x);
-          minY = Math.min(minY, l.y);
-          maxX = Math.max(maxX, l.x + l.width);
-          maxY = Math.max(maxY, l.y + l.height);
-      });
-
-      const contentWidth = maxX - minX;
-      const contentHeight = maxY - minY;
-      const padding = 50;
-
-      // Get available view area
-      const container = canvasRef.current?.parentElement;
-      if (!container) return;
-      
-      const viewWidth = container.clientWidth;
-      const viewHeight = container.clientHeight;
-
-      // Calculate scale to fit
-      const scaleX = (viewWidth - padding * 2) / contentWidth;
-      const scaleY = (viewHeight - padding * 2) / contentHeight;
-      const newZoom = Math.min(3, Math.min(scaleX, scaleY)); // Cap max zoom
-
-      // Center logic
-      const centeredX = (viewWidth - contentWidth * newZoom) / 2 - minX * newZoom;
-      const centeredY = (viewHeight - contentHeight * newZoom) / 2 - minY * newZoom;
-
-      setZoom(newZoom);
-      setPan({ x: centeredX, y: centeredY });
+    const targetLayers = Array.isArray(overrideLayers) ? overrideLayers : layers;
+    const container = canvasRef.current?.parentElement;
+    const result = handleFitViewUtil(targetLayers, container);
+    if (result) {
+      setZoom(result.zoom);
+      setPan(result.pan);
+    }
   };
 
   // --- Canvas Interaction ---
-  // Zoom with anchor point (defaults to viewport center)
   const zoomAtPoint = (newZoom: number, anchorX?: number, anchorY?: number) => {
     const containerRect = canvasContainerRef.current?.getBoundingClientRect();
     if (!containerRect) return;
-
-    const clampedZoom = Math.min(3, Math.max(0.2, newZoom));
-
-    // Default anchor to viewport center
-    const pointX = anchorX ?? containerRect.width / 2;
-    const pointY = anchorY ?? containerRect.height / 2;
-
-    const zoomRatio = clampedZoom / zoom;
-    const newPanX = pointX - (pointX - pan.x) * zoomRatio;
-    const newPanY = pointY - (pointY - pan.y) * zoomRatio;
-
-    setZoom(clampedZoom);
-    setPan({ x: newPanX, y: newPanY });
-  };
-
-  const getCanvasCoordinates = (e: React.PointerEvent | PointerEvent) => {
-     const container = canvasRef.current?.parentElement;
-     if (!container) return { x: 0, y: 0 };
-     const containerRect = container.getBoundingClientRect();
-     return {
-         x: (e.clientX - containerRect.left - pan.x) / zoom,
-         y: (e.clientY - containerRect.top - pan.y) / zoom
-     };
+    const result = zoomAtPointUtil(newZoom, zoom, pan, containerRect, anchorX, anchorY);
+    setZoom(result.zoom);
+    setPan(result.pan);
   };
 
   const handlePointerDown = (e: React.PointerEvent, layerId?: string, handle?: string) => {
@@ -731,9 +565,10 @@ export default function App() {
     }
     e.stopPropagation();
     setActiveMenu(null);
+    setContextMenu(null); // Close context menu when interacting with canvas
 
     if (layerId) {
-      const coords = getCanvasCoordinates(e);
+      const coords = getCanvasCoordinates(e, canvasRef, pan, zoom);
       dragState.current.startX = coords.x;
       dragState.current.startY = coords.y;
 
@@ -883,7 +718,7 @@ export default function App() {
         return;
     }
 
-    const coords = getCanvasCoordinates(e);
+    const coords = getCanvasCoordinates(e, canvasRef, pan, zoom);
     const dx = coords.x - dragState.current.startX;
     const dy = coords.y - dragState.current.startY;
 
@@ -995,8 +830,8 @@ export default function App() {
   const handlePointerUp = (e: React.PointerEvent) => {
     if (dragState.current.isSelecting && selectionBox) {
       const box = selectionBox;
-      const canvasStart = getCanvasCoordinates({ clientX: box.startX, clientY: box.startY } as any);
-      const canvasEnd = getCanvasCoordinates({ clientX: box.endX, clientY: box.endY } as any);
+      const canvasStart = getCanvasCoordinates({ clientX: box.startX, clientY: box.startY } as any, canvasRef, pan, zoom);
+      const canvasEnd = getCanvasCoordinates({ clientX: box.endX, clientY: box.endY } as any, canvasRef, pan, zoom);
       const minX = Math.min(canvasStart.x, canvasEnd.x);
       const maxX = Math.max(canvasStart.x, canvasEnd.x);
       const minY = Math.min(canvasStart.y, canvasEnd.y);
@@ -1116,120 +951,66 @@ export default function App() {
 
   // --- Deletion & Layer Order ---
   const deleteSelected = useCallback(() => {
-    const newLayers = layers.filter(l => !selectedIds.has(l.id));
+    const newLayers = deleteLayersUtil(layers, Array.from(selectedIds));
     setLayers(newLayers);
     setSelectedIds(new Set());
     pushHistory(newLayers);
   }, [layers, selectedIds, pushHistory]);
 
   const duplicateLayer = (layerId: string) => {
-    const layerToDuplicate = layers.find(l => l.id === layerId);
-    if (!layerToDuplicate) return;
-
-    const newLayer: CanvasLayer = {
-      ...layerToDuplicate,
-      id: Math.random().toString(36).substr(2, 9),
-      x: layerToDuplicate.x + 20,
-      y: layerToDuplicate.y + 20,
-      name: layerToDuplicate.name ? `${layerToDuplicate.name} (copy)` : 'Layer (copy)'
-    };
-
-    const newLayers = [...layers, newLayer];
+    const newLayers = duplicateLayerUtil(layers, layerId);
     setLayers(newLayers);
     pushHistory(newLayers);
   };
 
   const deleteLayers = (layerIds: string[]) => {
-    const newLayers = layers.filter(l => !layerIds.includes(l.id));
+    const newLayers = deleteLayersUtil(layers, layerIds);
     setLayers(newLayers);
     setSelectedIds(new Set());
     pushHistory(newLayers);
   };
 
   const bringToFront = () => {
-    const selected = layers.filter(l => selectedIds.has(l.id));
-    const unselected = layers.filter(l => !selectedIds.has(l.id));
-    setLayers([...unselected, ...selected]);
-    pushHistory([...unselected, ...selected]);
+    const newLayers = bringToFrontUtil(layers, selectedIds);
+    setLayers(newLayers);
+    pushHistory(newLayers);
   };
+
   const sendToBack = () => {
-    const selected = layers.filter(l => selectedIds.has(l.id));
-    const unselected = layers.filter(l => !selectedIds.has(l.id));
-    setLayers([...selected, ...unselected]);
-    pushHistory([...selected, ...unselected]);
+    const newLayers = sendToBackUtil(layers, selectedIds);
+    setLayers(newLayers);
+    pushHistory(newLayers);
   };
+
   const reorderLayers = (newLayers: CanvasLayer[]) => {
-      setLayers(newLayers);
-      pushHistory(newLayers);
+    setLayers(newLayers);
+    pushHistory(newLayers);
   };
+
   const selectAllLayers = useCallback(() => {
-      const allIds = new Set(layers.map((l: CanvasLayer) => l.id));
-      setSelectedIds(allIds);
+    const allIds = selectAllLayersUtil(layers);
+    setSelectedIds(allIds);
   }, [layers]);
 
   const clearCanvas = () => {
-      setLayers([]);
-      setSelectedIds(new Set());
-      pushHistory([]);
+    const newLayers = clearCanvasUtil();
+    setLayers(newLayers);
+    setSelectedIds(new Set());
+    pushHistory(newLayers);
   };
 
   // --- Export Logic ---
-  const generateExportUrl = async (singleLayerId?: string) => {
-    const canvas = document.createElement('canvas');
-    let layersToExport = singleLayerId ? layers.filter(l => l.id === singleLayerId) : layers;
-    if (layersToExport.length === 0) return null;
-
-    let bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-    layersToExport.forEach(l => {
-      bounds.minX = Math.min(bounds.minX, l.x);
-      bounds.minY = Math.min(bounds.minY, l.y);
-      bounds.maxX = Math.max(bounds.maxX, l.x + l.width);
-      bounds.maxY = Math.max(bounds.maxY, l.y + l.height);
-    });
-
-    const padding = 0;
-    const width = bounds.maxX - bounds.minX + padding * 2;
-    const height = bounds.maxY - bounds.minY + padding * 2;
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-
-    if (!singleLayerId && settings.backgroundMode === 'solid') {
-        ctx.fillStyle = settings.backgroundColor;
-        ctx.fillRect(0, 0, width, height);
-    }
-    for (const layer of layersToExport) {
-      const img = new Image();
-      img.src = layer.src;
-      img.crossOrigin = "anonymous";
-      await new Promise(resolve => { img.onload = resolve; });
-      ctx.drawImage(img, layer.x - bounds.minX + padding, layer.y - bounds.minY + padding, layer.width, layer.height);
-    }
-    return canvas.toDataURL('image/png');
-  };
-
   const handleExportClick = async (singleLayerId?: string) => {
-      const url = await generateExportUrl(singleLayerId);
-      if (url) {
-          if (singleLayerId) {
-             // Direct download for single layer context menu (keep simple)
-             downloadImage(url);
-          } else {
-             // Show preview for main export
-             setExportPreviewUrl(url);
-          }
+    const url = await generateExportUrl(layers, settings, singleLayerId);
+    if (url) {
+      if (singleLayerId) {
+        downloadImage(url);
+      } else {
+        // Save manual version when exporting
+        saveVersion('manual', url);
+        setExportPreviewUrl(url);
       }
-  };
-
-  const downloadImage = (url: string) => {
-    const link = document.createElement('a');
-    link.download = `collage-${Date.now()}.png`;
-    link.href = url;
-    link.click();
-
-    // Save version history logic with manual save type
-    saveVersion('manual', url);
+    }
   };
 
   // Save version to history
@@ -1239,7 +1020,7 @@ export default function App() {
     // Generate thumbnail if not provided
     let thumbnailUrl = thumbnail;
     if (!thumbnailUrl) {
-      thumbnailUrl = await generateExportUrl();
+      thumbnailUrl = await generateExportUrl(layers, settings);
     }
 
     const newVersion: SavedVersion = {
@@ -1556,12 +1337,10 @@ To restore this version:
     }
   };
 
-  // Clear all versions
+  // Clear all versions (no browser confirm needed, handled by Sidebar component)
   const clearAllVersions = () => {
-    if (confirm(translations[lang].clearAllVersionsConfirm)) {
-      setVersions([]);
-      localStorage.removeItem('collage_versions');
-    }
+    setVersions([]);
+    localStorage.removeItem('collage_versions');
   };
 
   // Delete a single version
@@ -1575,76 +1354,19 @@ To restore this version:
     }
   };
 
-  useEffect(() => {
-      const handleKeyDown = (e: KeyboardEvent) => {
-          // Check if user is typing in an input or textarea
-          const target = e.target as HTMLElement;
-          const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
-
-          // Track Alt key state
-          if (e.key === 'Alt') {
-              setIsAltKeyPressed(true);
-          }
-
-          // Ctrl+S / Cmd+S for manual save
-          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-              e.preventDefault();
-              handleManualSave();
-          }
-
-          // Ctrl+Z / Cmd+Z for undo
-          // Ctrl+Shift+Z / Cmd+Shift+Z for redo
-          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
-              e.preventDefault();
-              if (e.shiftKey) redo(); else undo();
-          }
-          // Ctrl+Y / Cmd+Y for redo (alternative)
-          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
-              e.preventDefault();
-              redo();
-          }
-          // Ctrl+A / Cmd+A for select all
-          if ((e.metaKey || e.ctrlKey) && e.key === 'a' && !isInputField) {
-              e.preventDefault();
-              selectAllLayers();
-          }
-          // Ctrl+D / Cmd+D for deselect all
-          if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
-              e.preventDefault();
-              setSelectedIds(new Set());
-          }
-          // V key to toggle batch select mode
-          if (e.key === 'v' && !isInputField && !e.ctrlKey && !e.metaKey) {
-              e.preventDefault();
-              setIsBatchSelectMode((prev: boolean) => !prev);
-          }
-          // Delete/Backspace to delete selected layers
-          if ((e.key === 'Delete' || e.key === 'Backspace') && !isInputField) {
-              if (selectedIds.size > 0) deleteSelected();
-          }
-      };
-
-      const handleKeyUp = (e: KeyboardEvent) => {
-          // Track Alt key state
-          if (e.key === 'Alt') {
-              setIsAltKeyPressed(false);
-          }
-      };
-
-      // Reset Alt key state when window loses focus (fixes Alt+Tab issue)
-      const handleBlur = () => {
-          setIsAltKeyPressed(false);
-      };
-
-      window.addEventListener('keydown', handleKeyDown);
-      window.addEventListener('keyup', handleKeyUp);
-      window.addEventListener('blur', handleBlur);
-      return () => {
-          window.removeEventListener('keydown', handleKeyDown);
-          window.removeEventListener('keyup', handleKeyUp);
-          window.removeEventListener('blur', handleBlur);
-      };
-  }, [layers, selectedIds, history, historyIndex, undo, redo, deleteSelected, selectAllLayers, handleManualSave]);
+  // Use keyboard shortcuts hook
+  useKeyboardShortcuts({
+    layers,
+    selectedIds,
+    onUndo: handleUndo,
+    onRedo: handleRedo,
+    onSave: handleManualSave,
+    onSelectAll: selectAllLayers,
+    onDeselectAll: () => setSelectedIds(new Set()),
+    onDelete: deleteSelected,
+    onToggleBatchSelect: () => setIsBatchSelectMode(prev => !prev),
+    onAltKeyChange: setIsAltKeyPressed
+  });
 
   // Auto-save every 1 minute
   useEffect(() => {
@@ -1713,9 +1435,7 @@ To restore this version:
   }, [zoom, pan]);
 
   // Compute background style
-  const backgroundStyle = settings.backgroundMode === 'solid' 
-      ? (settings.previewBackground ? settings.backgroundColor : '#0f172a')
-      : '#0f172a';
+  const backgroundStyle = getBackgroundStyle(settings.backgroundMode, settings.backgroundColor, settings.previewBackground);
 
   return (
     <div
@@ -1930,8 +1650,8 @@ To restore this version:
             >
                 {/* Group 1: Undo/Redo */}
                 <div className="flex max-md:flex-col gap-1 shrink-0">
-                    <TooltipButton title={translations[lang].undo} onClick={undo} disabled={historyIndex === 0} icon={Undo} />
-                    <TooltipButton title={translations[lang].redo} onClick={redo} disabled={historyIndex === history.length - 1} icon={Redo} />
+                    <TooltipButton title={translations[lang].undo} onClick={handleUndo} disabled={!canUndo} icon={Undo} />
+                    <TooltipButton title={translations[lang].redo} onClick={handleRedo} disabled={!canRedo} icon={Redo} />
                 </div>
                 
                 <div className="md:w-px md:h-8 max-md:w-6 max-md:h-px bg-slate-700/50 shrink-0 mx-1 max-md:mx-auto" />
@@ -1947,11 +1667,14 @@ To restore this version:
 
                     {/* Stitch Menu Trigger */}
                     <div className="relative">
-                        <TooltipButton 
-                            title={translations[lang].autoStitch} 
-                            onClick={() => setActiveMenu(activeMenu === 'stitch' ? null : 'stitch')} 
-                            active={activeMenu === 'stitch'} 
-                            icon={Combine} 
+                        <TooltipButton
+                            title={translations[lang].autoStitch}
+                            onClick={() => {
+                                setContextMenu(null);
+                                setActiveMenu(activeMenu === 'stitch' ? null : 'stitch');
+                            }}
+                            active={activeMenu === 'stitch'}
+                            icon={Combine}
                         />
                         <AnimatePresence>
                             {activeMenu === 'stitch' && (
@@ -2121,7 +1844,7 @@ To restore this version:
                                                             if (val === '') {
                                                                 setSettings({...settings, gridRows: '' as any});
                                                             } else if (/^\d+$/.test(val)) {
-                                                                const num = Math.max(1, Math.min(10, parseInt(val, 10)));
+                                                                const num = Math.max(1, parseInt(val, 10));
                                                                 setSettings({...settings, gridRows: num});
                                                             }
                                                         }}
@@ -2180,7 +1903,7 @@ To restore this version:
                                                             if (val === '') {
                                                                 setSettings({...settings, gridCols: '' as any});
                                                             } else if (/^\d+$/.test(val)) {
-                                                                const num = Math.max(1, Math.min(10, parseInt(val, 10)));
+                                                                const num = Math.max(1, parseInt(val, 10));
                                                                 setSettings({...settings, gridCols: num});
                                                             }
                                                         }}
@@ -2246,11 +1969,14 @@ To restore this version:
 
                     {/* Align Menu Trigger */}
                     <div className="relative">
-                        <TooltipButton 
-                            title={translations[lang].alignment} 
-                            onClick={() => setActiveMenu(activeMenu === 'align' ? null : 'align')} 
-                            active={activeMenu === 'align'} 
-                            icon={AlignLeft} 
+                        <TooltipButton
+                            title={translations[lang].alignment}
+                            onClick={() => {
+                                setContextMenu(null);
+                                setActiveMenu(activeMenu === 'align' ? null : 'align');
+                            }}
+                            active={activeMenu === 'align'}
+                            icon={AlignLeft}
                         />
                         <AnimatePresence>
                             {activeMenu === 'align' && (
@@ -2299,11 +2025,14 @@ To restore this version:
 
                 {/* Mobile More Menu */}
                 <div className="md:hidden relative">
-                    <TooltipButton 
-                        title={translations[lang].more} 
-                        onClick={() => setActiveMenu(activeMenu === 'more' ? null : 'more')} 
+                    <TooltipButton
+                        title={translations[lang].more}
+                        onClick={() => {
+                            setContextMenu(null);
+                            setActiveMenu(activeMenu === 'more' ? null : 'more');
+                        }}
                         active={activeMenu === 'more'}
-                        icon={MoreHorizontal} 
+                        icon={MoreHorizontal}
                     />
                     <AnimatePresence>
                         {activeMenu === 'more' && (
@@ -2406,20 +2135,29 @@ To restore this version:
                             <div className="flex-1 overflow-auto p-4 bg-slate-950/50 flex items-center justify-center custom-scrollbar">
                                 <img src={exportPreviewUrl} alt="Export Preview" className="max-w-full max-h-[70vh] shadow-lg border border-slate-800" />
                             </div>
-                            <div className="p-4 border-t border-slate-700 bg-slate-800/50 flex justify-end gap-3">
-                                <button 
-                                    onClick={() => setExportPreviewUrl(null)}
-                                    className="px-4 py-2 rounded-lg text-slate-300 hover:bg-slate-700 transition-colors font-medium text-sm"
+                            <div className="p-4 border-t border-slate-700 bg-slate-800/50 flex justify-between items-center gap-3">
+                                <button
+                                    onClick={() => { exportAsPSD(); setExportPreviewUrl(null); }}
+                                    className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-medium text-sm flex items-center gap-2 transition-colors"
                                 >
-                                    {translations[lang].close}
+                                    <Layers className="w-4 h-4" />
+                                    {translations[lang].exportPSD}
                                 </button>
-                                <button 
-                                    onClick={() => { downloadImage(exportPreviewUrl as string); setExportPreviewUrl(null); }}
-                                    className="px-6 py-2 rounded-lg bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 font-medium text-sm flex items-center gap-2"
-                                >
-                                    <Download className="w-4 h-4" />
-                                    {translations[lang].download}
-                                </button>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setExportPreviewUrl(null)}
+                                        className="px-4 py-2 rounded-lg text-slate-300 hover:bg-slate-700 transition-colors font-medium text-sm"
+                                    >
+                                        {translations[lang].close}
+                                    </button>
+                                    <button
+                                        onClick={() => { downloadImage(exportPreviewUrl as string); setExportPreviewUrl(null); }}
+                                        className="px-6 py-2 rounded-lg bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 font-medium text-sm flex items-center gap-2"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        {translations[lang].download}
+                                    </button>
+                                </div>
                             </div>
                         </motion.div>
                     </motion.div>
@@ -2495,13 +2233,13 @@ To restore this version:
                                 <div>
                                     <h4 className="text-xs font-semibold text-slate-400 uppercase mb-2">{translations[lang].mouseTitle}</h4>
                                     <div className="space-y-1.5">
-                                        <ShortcutItem label={translations[lang].mousePan} keys={["Space + Drag"]} isMouseOp />
-                                        <ShortcutItem label={translations[lang].mouseDrag} keys={["Click + Drag"]} isMouseOp />
-                                        <ShortcutItem label={translations[lang].mouseAltDrag} keys={["Alt + Drag"]} isMouseOp />
-                                        <ShortcutItem label={translations[lang].mouseResize} keys={["Corner + Drag"]} isMouseOp />
-                                        <ShortcutItem label={translations[lang].mouseBoxSelect} keys={["V + Drag"]} isMouseOp />
-                                        <ShortcutItem label={translations[lang].mouseAltBox} keys={["V + Alt + Drag"]} isMouseOp />
-                                        <ShortcutItem label={translations[lang].mouseWheel} keys={["Scroll"]} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mousePan} keys={[lang === 'zh' ? 'Space + 拖动' : 'Space + Drag']} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseDrag} keys={[lang === 'zh' ? 'Click + 拖动' : 'Click + Drag']} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseAltDrag} keys={[lang === 'zh' ? 'Alt + 拖动' : 'Alt + Drag']} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseResize} keys={[lang === 'zh' ? 'Corner + 拖动' : 'Corner + Drag']} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseBoxSelect} keys={[lang === 'zh' ? '拖动' : 'Drag']} isMouseOp note={translations[lang].batchModeNote} />
+                                        <ShortcutItem label={translations[lang].mouseAltBox} keys={[lang === 'zh' ? 'Alt + 拖动' : 'Alt + Drag']} isMouseOp note={translations[lang].batchModeNote} />
+                                        <ShortcutItem label={translations[lang].mouseWheel} keys={[lang === 'zh' ? '滚轮' : 'Scroll']} isMouseOp />
                                     </div>
                                 </div>
                             </motion.div>
@@ -2533,45 +2271,3 @@ To restore this version:
   );
 }
 
-// Helper component for shortcut items
-const ShortcutItem: React.FC<{
-    label: string;
-    keys: string[];
-    altKeys?: string[];
-    isMouseOp?: boolean;
-}> = ({ label, keys, altKeys, isMouseOp = false }) => (
-    <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-300">{label}</span>
-        <div className="flex items-center gap-1">
-            <div className="flex items-center gap-0.5">
-                {keys.map((key, i) => (
-                    <React.Fragment key={i}>
-                        <kbd className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                            isMouseOp
-                                ? 'bg-slate-700 text-slate-300 border border-slate-600'
-                                : 'bg-slate-800 text-primary border border-primary/30'
-                        }`}>
-                            {key}
-                        </kbd>
-                        {i < keys.length - 1 && <span className="text-slate-500 text-[10px] mx-0.5">+</span>}
-                    </React.Fragment>
-                ))}
-            </div>
-            {altKeys && (
-                <>
-                    <span className="text-slate-600 text-[10px] mx-1">/</span>
-                    <div className="flex items-center gap-0.5">
-                        {altKeys.map((key, i) => (
-                            <React.Fragment key={i}>
-                                <kbd className="px-1.5 py-0.5 bg-slate-800 text-primary border border-primary/30 rounded text-[10px] font-mono">
-                                    {key}
-                                </kbd>
-                                {i < altKeys.length - 1 && <span className="text-slate-500 text-[10px] mx-0.5">+</span>}
-                            </React.Fragment>
-                        ))}
-                    </div>
-                </>
-            )}
-        </div>
-    </div>
-);

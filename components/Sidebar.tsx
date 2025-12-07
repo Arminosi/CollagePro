@@ -48,7 +48,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [tab, setTab] = React.useState<'settings' | 'history'>('settings');
   const [confirmGithub, setConfirmGithub] = React.useState(false);
   const [confirmClear, setConfirmClear] = React.useState(false);
-  const [confirmClearVersions, setConfirmClearVersions] = React.useState(false);
+  const [confirmClearVersions, setConfirmClearVersions] = React.useState(0); // 0, 1, 2 for three-step confirmation
   const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
   const [versionFilter, setVersionFilter] = React.useState<'all' | 'manual' | 'auto'>('all');
   const t = translations[lang];
@@ -108,7 +108,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const handleClickOutside = () => {
       setConfirmGithub(false);
       setConfirmClear(false);
-      setConfirmClearVersions(false);
+      setConfirmClearVersions(0);
       setConfirmDeleteId(null);
     };
     document.addEventListener('click', handleClickOutside);
@@ -320,24 +320,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (confirmClearVersions) {
+                  if (confirmClearVersions === 2) {
+                    // Third click: execute without browser confirm
                     onClearAllVersions();
-                    setConfirmClearVersions(false);
+                    setConfirmClearVersions(0);
                   } else {
-                    setConfirmClearVersions(true);
+                    // First or second click: increment counter
+                    setConfirmClearVersions(confirmClearVersions + 1);
                   }
                 }}
                 className={`relative p-2 border rounded-lg transition-all ${
-                  confirmClearVersions
+                  confirmClearVersions > 0
                     ? 'bg-red-600 hover:bg-red-700 border-red-500 text-white'
                     : 'bg-red-900/20 hover:bg-red-900/40 border-red-800/50 text-red-400 hover:text-red-300'
                 }`}
                 title={t.clearAllVersions}
               >
                 <Trash2 className="w-4 h-4" />
-                {confirmClearVersions && (
+                {confirmClearVersions > 0 && (
                   <span className="absolute -top-9 right-0 bg-red-600 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-red-400">
-                    {t.clearAllVersionsHint}
+                    {confirmClearVersions === 1 ? (lang === 'zh' ? '再次点击确认' : 'Click again') : (lang === 'zh' ? '最后确认！' : 'Final confirm!')}
                   </span>
                 )}
               </button>
