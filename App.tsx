@@ -566,6 +566,11 @@ export default function App() {
     e.stopPropagation();
     setActiveMenu(null);
     setContextMenu(null); // Close context menu when interacting with canvas
+    
+    // Close sidebar on mobile when clicking canvas
+    if (window.innerWidth < 768 && isSidebarOpen && !layerId) {
+      setIsSidebarOpen(false);
+    }
 
     if (layerId) {
       const coords = getCanvasCoordinates(e, canvasRef, pan, zoom);
@@ -1067,11 +1072,10 @@ export default function App() {
   }, []);
 
   const loadVersion = (v: SavedVersion) => {
-      if (confirm(translations[lang].confirmLoad)) {
-          setLayers(v.layers);
-          pushHistory(v.layers);
-          setContextMenu(null);
-      }
+      // No browser confirm needed, handled by Sidebar component
+      setLayers(v.layers);
+      pushHistory(v.layers);
+      setContextMenu(null);
   };
 
   const exportVersionPackage = async (version: SavedVersion) => {
@@ -1505,6 +1509,7 @@ To restore this version:
             lang={lang}
             onProcessFiles={processFiles}
             onClearCanvas={clearCanvas}
+            onClose={() => setIsSidebarOpen(false)}
           />
 
           <div

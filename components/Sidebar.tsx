@@ -25,6 +25,7 @@ interface SidebarProps {
   lang: Language;
   onProcessFiles: (files: File[]) => void;
   onClearCanvas: () => void;
+  onClose?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -43,14 +44,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   lang,
   onProcessFiles,
-  onClearCanvas
+  onClearCanvas,
+  onClose
 }) => {
+  const sidebarRef = React.useRef<HTMLDivElement>(null);
   const [tab, setTab] = React.useState<'settings' | 'history'>('settings');
   const [confirmGithub, setConfirmGithub] = React.useState(false);
   const [confirmClear, setConfirmClear] = React.useState(false);
   const [confirmClearVersions, setConfirmClearVersions] = React.useState(0); // 0, 1, 2 for three-step confirmation
   const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
+  const [confirmRestoreId, setConfirmRestoreId] = React.useState<string | null>(null);
   const [versionFilter, setVersionFilter] = React.useState<'all' | 'manual' | 'auto'>('all');
+  const [activeVersionId, setActiveVersionId] = React.useState<string | null>(null);
+  const [hoveredButton, setHoveredButton] = React.useState<string | null>(null);
   const t = translations[lang];
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -64,8 +70,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const files = Array.from(e.dataTransfer.files);
       // Separate PSD files and image files
-      const psdFiles = files.filter(f => f.name.toLowerCase().endsWith('.psd'));
-      const imageFiles = files.filter(f => !f.name.toLowerCase().endsWith('.psd'));
+      const psdFiles = files.filter((f: File) => f.name.toLowerCase().endsWith('.psd'));
+      const imageFiles = files.filter((f: File) => !f.name.toLowerCase().endsWith('.psd'));
 
       // Process PSD files
       psdFiles.forEach(file => onImportPSD(file));
@@ -110,6 +116,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       setConfirmClear(false);
       setConfirmClearVersions(0);
       setConfirmDeleteId(null);
+      setConfirmRestoreId(null);
+      setActiveVersionId(null);
+      setHoveredButton(null);
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
@@ -159,12 +168,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <input type="file" className="hidden" multiple accept="image/*,.psd" onChange={(e) => {
                       if (e.target.files && e.target.files.length > 0) {
                         const files = Array.from(e.target.files);
-                        const psdFiles = files.filter(f => f.name.toLowerCase().endsWith('.psd'));
-                        const imageFiles = files.filter(f => !f.name.toLowerCase().endsWith('.psd'));
+                        const psdFiles = files.filter((f: File) => f.name.toLowerCase().endsWith('.psd'));
+                        const imageFiles = files.filter((f: File) => !f.name.toLowerCase().endsWith('.psd'));
 
-                        psdFiles.forEach(file => handlePSDInput({ target: { files: [file] } } as any));
+                        psdFiles.forEach(file => onImportPSD(file));
                         if (imageFiles.length > 0) {
-                          handleFileInput({ target: { files: imageFiles } } as any);
+                          onProcessFiles(imageFiles);
                         }
                       }
                       e.target.value = '';
@@ -370,52 +379,121 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           {v.saveType === 'manual' ? t.manualSave : t.autoSave}
                         </span>
                       </div>
-                      {v.thumbnail ? (
-                        <img src={v.thumbnail} alt="Version" className="w-full h-full object-contain" />
-                      ) : (
-                        <div className="flex items-center justify-center h-full">
-                           <ImageIcon className="w-8 h-8 text-slate-700" />
-                        </div>
-                      )}
-                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 px-2">
+                      <div
+                        className="w-full h-full cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (activeVersionId !== v.id) {
+                            setActiveVersionId(v.id);
+                          }
+                        }}
+                      >
+                        {v.thumbnail ? (
+                          <img src={v.thumbnail} alt="Version" className="w-full h-full object-contain" />
+                        ) : (
+                          <div className="flex items-center justify-center h-full">
+                             <ImageIcon className="w-8 h-8 text-slate-700" />
+                          </div>
+                        )}
+                      </div>
+                      <div className={`absolute inset-0 bg-black/50 transition-opacity flex items-center justify-center gap-1.5 px-2 ${
+                        activeVersionId === v.id ? 'opacity-100 pointer-events-auto' : 'opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto'
+                      }`}>
                           <button
-                             onClick={() => onLoadVersion(v)}
-                             className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-lg"
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               const buttonId = `restore-${v.id}`;
+                               if (window.innerWidth < 640 && hoveredButton !== buttonId) {
+                                 setHoveredButton(buttonId);
+                                 return;
+                               }
+                               if (confirmRestoreId === v.id) {
+                                 onLoadVersion(v);
+                                 setConfirmRestoreId(null);
+                                 setHoveredButton(null);
+                               } else {
+                                 setConfirmRestoreId(v.id);
+                               }
+                             }}
+                             className={`relative px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-lg transition-all ${
+                               confirmRestoreId === v.id
+                                 ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                                 : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                             }`}
                              title={t.restore}
                           >
                              <RotateCcw className="w-3 h-3" />
                              <span className="hidden sm:inline">{lang === 'zh' ? '恢复' : 'Restore'}</span>
+                             {hoveredButton === `restore-${v.id}` && (
+                               <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-indigo-400 z-10">
+                                 {lang === 'zh' ? '恢复此版本' : 'Restore version'}
+                               </span>
+                             )}
+                             {confirmRestoreId === v.id && (
+                               <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-orange-600 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-orange-400 z-10">
+                                 {lang === 'zh' ? '会覆盖当前画布' : 'Will replace canvas'}
+                               </span>
+                             )}
                           </button>
                           <button
                              onClick={(e) => {
                                e.stopPropagation();
+                               const buttonId = `export-${v.id}`;
+                               if (window.innerWidth < 640 && hoveredButton !== buttonId) {
+                                 setHoveredButton(buttonId);
+                                 return;
+                               }
                                onExportVersion(v);
+                               setHoveredButton(null);
                              }}
-                             className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-lg"
+                             className="relative bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-lg"
                              title={t.exportVersionTooltip}
                           >
                              <Download className="w-3 h-3" />
                              <span className="hidden sm:inline">{lang === 'zh' ? '导出' : 'Export'}</span>
+                             {hoveredButton === `export-${v.id}` && (
+                               <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-emerald-600 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-emerald-400 z-10">
+                                 {lang === 'zh' ? '导出版本包' : 'Export package'}
+                               </span>
+                             )}
                           </button>
                           <button
                              onClick={(e) => {
                                e.stopPropagation();
+                               const buttonId = `exportpsd-${v.id}`;
+                               if (window.innerWidth < 640 && hoveredButton !== buttonId) {
+                                 setHoveredButton(buttonId);
+                                 return;
+                               }
                                onExportVersionPSD(v);
+                               setHoveredButton(null);
                              }}
-                             className="bg-purple-600 hover:bg-purple-700 text-white px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-lg"
+                             className="relative bg-purple-600 hover:bg-purple-700 text-white px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-lg"
                              title={t.exportVersionPSD}
                           >
                              <Download className="w-3 h-3" />
                              <span className="hidden sm:inline">PSD</span>
+                             {hoveredButton === `exportpsd-${v.id}` && (
+                               <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-purple-600 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-purple-400 z-10">
+                                 {lang === 'zh' ? '导出PSD' : 'Export PSD'}
+                               </span>
+                             )}
                           </button>
                           <button
                              onClick={(e) => {
                                e.stopPropagation();
+                               const buttonId = `delete-${v.id}`;
+                               if (window.innerWidth < 640 && hoveredButton !== buttonId && confirmDeleteId !== v.id) {
+                                 setHoveredButton(buttonId);
+                                 return;
+                               }
                                if (confirmDeleteId === v.id) {
                                  onDeleteVersion(v.id);
                                  setConfirmDeleteId(null);
+                                 setHoveredButton(null);
                                } else {
                                  setConfirmDeleteId(v.id);
+                                 setHoveredButton(null);
                                }
                              }}
                              className={`relative px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-lg transition-all ${
@@ -427,8 +505,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           >
                              <Trash2 className="w-3 h-3" />
                              <span className="hidden sm:inline">{lang === 'zh' ? '删除' : 'Delete'}</span>
+                             {hoveredButton === `delete-${v.id}` && (
+                               <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-red-900 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-red-700 z-10">
+                                 {lang === 'zh' ? '删除此版本' : 'Delete version'}
+                               </span>
+                             )}
                              {confirmDeleteId === v.id && (
-                               <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-red-400">
+                               <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[10px] px-2 py-1 rounded shadow-lg whitespace-nowrap border border-red-400 z-10">
                                  {t.clearAllVersionsHint}
                                </span>
                              )}
