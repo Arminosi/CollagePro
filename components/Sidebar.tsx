@@ -49,6 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const sidebarRef = React.useRef<HTMLDivElement>(null);
   const [tab, setTab] = React.useState<'settings' | 'history'>('settings');
+  const [confirmQwqTeam, setConfirmQwqTeam] = React.useState(false);
   const [confirmGithub, setConfirmGithub] = React.useState(false);
   const [confirmClear, setConfirmClear] = React.useState(false);
   const [confirmClearVersions, setConfirmClearVersions] = React.useState(0); // 0, 1, 2 for three-step confirmation
@@ -112,6 +113,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   React.useEffect(() => {
     const handleClickOutside = () => {
+      setConfirmQwqTeam(false);
       setConfirmGithub(false);
       setConfirmClear(false);
       setConfirmClearVersions(0);
@@ -125,14 +127,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, []);
 
   return (
-    <div
-      className={`
-        bg-surface border-r border-slate-800 flex flex-col shrink-0
-        transition-[width,opacity] duration-300 ease-in-out overflow-hidden
-        md:z-20 max-md:z-50
-        ${isOpen ? 'w-80 opacity-100' : 'w-0 opacity-0 border-r-0'}
-      `}
-    >
+    <>
+      {/* Mobile backdrop */}
+      {isOpen && (
+        <div 
+          className="md:hidden fixed inset-0 bg-black/60 z-40 top-14"
+          onClick={onClose}
+        />
+      )}
+      
+      <div
+        className={`
+          bg-surface border-r border-slate-800 flex flex-col shrink-0
+          transition-[width,opacity] duration-300 ease-in-out overflow-hidden
+          md:relative md:z-20
+          max-md:fixed max-md:left-0 max-md:top-14 max-md:bottom-0 max-md:z-50
+          ${isOpen ? 'w-80 opacity-100' : 'w-0 opacity-0 border-r-0'}
+        `}
+      >
       {/* Tabs */}
       <div className="flex border-b border-slate-700 min-w-[20rem]">
         <button 
@@ -547,6 +559,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
            <button 
               onClick={(e) => {
                   e.stopPropagation();
+                  if (confirmQwqTeam) {
+                      window.open('https://www.qwq.team/', '_blank', 'noopener,noreferrer');
+                      setConfirmQwqTeam(false);
+                  } else {
+                      setConfirmQwqTeam(true);
+                  }
+              }}
+              className={`flex items-center justify-center gap-2 px-3 py-1.5 border rounded-lg transition-all text-xs font-medium ${
+                  confirmQwqTeam 
+                      ? 'bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white' 
+                      : 'bg-slate-900/50 hover:bg-slate-800 border-slate-700/50 hover:border-slate-600 text-slate-400 hover:text-white'
+              }`}
+           >
+              <svg className={`w-3.5 h-3.5 ${confirmQwqTeam ? 'text-white' : 'transition-colors'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7"></rect>
+                <rect x="14" y="3" width="7" height="7"></rect>
+                <rect x="14" y="14" width="7" height="7"></rect>
+                <rect x="3" y="14" width="7" height="7"></rect>
+              </svg>
+              <span>{confirmQwqTeam ? (lang === 'zh' ? '确认？' : 'Confirm?') : (lang === 'zh' ? '制图匠' : 'QwQ.Team')}</span>
+           </button>
+           
+           <button 
+              onClick={(e) => {
+                  e.stopPropagation();
                   if (confirmGithub) {
                       window.open('https://github.com/Arminosi/CollagePro', '_blank', 'noopener,noreferrer');
                       setConfirmGithub(false);
@@ -570,5 +607,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
     </div>
+    </>
   );
 };
