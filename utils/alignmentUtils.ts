@@ -71,8 +71,12 @@ export const handleAutoStitch = (
   let referenceDimension = 0;
   
   if (settings.smartStitch) {
-    if (direction === 'vertical') referenceDimension = first.width;
-    else referenceDimension = first.height;
+    // Find the maximum dimension (width for vertical stitch, height for horizontal stitch)
+    if (direction === 'vertical') {
+      referenceDimension = Math.max(...targetLayers.map(l => l.width));
+    } else {
+      referenceDimension = Math.max(...targetLayers.map(l => l.height));
+    }
   }
 
   const processedStitched = targetLayers.map((layer) => {

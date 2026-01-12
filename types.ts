@@ -8,6 +8,8 @@ export interface CanvasLayer {
   height: number;
   zIndex: number;
   name: string;
+  originalWidth?: number;  // Original image width for high-quality export
+  originalHeight?: number; // Original image height for high-quality export
 }
 
 export interface AppSettings {

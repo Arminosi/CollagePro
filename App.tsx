@@ -20,7 +20,7 @@ import {
   selectAllLayers as selectAllLayersUtil,
   clearCanvas as clearCanvasUtil
 } from './utils/layerOperations';
-import { generateExportUrl, downloadImage, calculateGridDimension } from './utils/exportUtils';
+import { generateExportUrl, downloadImage, calculateGridDimension, estimateExportSize } from './utils/exportUtils';
 import { handleAlign as handleAlignUtil, handleAutoStitch as handleAutoStitchUtil } from './utils/alignmentUtils';
 import { handleGridLayout as handleGridLayoutUtil } from './utils/gridLayoutUtils';
 import { getCanvasCoordinates, zoomAtPoint as zoomAtPointUtil, handleFitView as handleFitViewUtil, getBackgroundStyle } from './utils/canvasUtils';
@@ -47,11 +47,16 @@ export default function App() {
   const [lang, setLang] = useState<Language>('zh');
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'png' | 'jpg'>('png');
+  const [exportQuality, setExportQuality] = useState(0.95);
+  const [estimatedSize, setEstimatedSize] = useState<string>('');
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
   const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [exportProgress, setExportProgress] = useState<{ progress: number; message: string } | null>(null);
 
   // Toast notification helper
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
@@ -129,18 +134,69 @@ export default function App() {
       // Remember if this is the first import (canvas is empty)
       const isFirstImport = layers.length === 0;
 
+      // Supported image formats
+      const supportedFormats = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/svg+xml'];
+      const supportedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+
+      // Filter and validate files
+      const validFiles: File[] = [];
+      const invalidFiles: string[] = [];
+
+      Array.from(files).forEach(file => {
+        const isValidType = supportedFormats.includes(file.type);
+        const hasValidExtension = supportedExtensions.some(ext => 
+          file.name.toLowerCase().endsWith(ext)
+        );
+        
+        if (isValidType || hasValidExtension) {
+          validFiles.push(file);
+        } else {
+          invalidFiles.push(file.name);
+        }
+      });
+
+      // Show warning for invalid files
+      if (invalidFiles.length > 0) {
+        const fileList = invalidFiles.slice(0, 3).join(', ') + (invalidFiles.length > 3 ? ` 等${invalidFiles.length}个文件` : '');
+        showToast(`不支持的文件格式: ${fileList}`, 'error');
+      }
+
+      if (validFiles.length === 0) {
+        if (invalidFiles.length > 0) {
+          showToast('没有找到支持的图片文件', 'error');
+        }
+        return;
+      }
+
       // Sort files by name in ascending order before processing
-      const sortedFiles = Array.from(files).sort((a, b) =>
+      const sortedFiles = validFiles.sort((a, b) =>
           a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
       );
 
       let loadedCount = 0;
+      let failedCount = 0;
       const newLayers: CanvasLayer[] = [];
 
       sortedFiles.forEach((file) => {
         const reader = new FileReader();
+        reader.onerror = () => {
+          failedCount++;
+          loadedCount++;
+          console.error('Failed to read file:', file.name);
+          if (loadedCount === sortedFiles.length) {
+            finishImport();
+          }
+        };
         reader.onload = (ev) => {
           const img = new Image();
+          img.onerror = () => {
+            failedCount++;
+            loadedCount++;
+            console.error('Failed to load image:', file.name);
+            if (loadedCount === sortedFiles.length) {
+              finishImport();
+            }
+          };
           img.onload = () => {
             const count = layers.length + loadedCount;
             const aspectRatio = img.width / img.height;
@@ -160,73 +216,91 @@ export default function App() {
               width: baseSize,
               height: baseSize / aspectRatio,
               zIndex: count,
-              name: file.name
+              name: file.name,
+              originalWidth: img.width,   // Save original resolution
+              originalHeight: img.height  // Save original resolution
             });
 
             loadedCount++;
             if (loadedCount === sortedFiles.length) {
-              // Sort new layers by name before adding them
-              const sortedNewLayers = newLayers.sort((a, b) => {
-                const nameA = (a.name || '').toLowerCase();
-                const nameB = (b.name || '').toLowerCase();
-                return nameA.localeCompare(nameB);
-              });
-
-              let updatedLayers = [...layers, ...sortedNewLayers];
-
-              // If this is the first import, sort all layers by name (ascending)
-              if (isFirstImport) {
-                updatedLayers = updatedLayers.sort((a, b) => {
-                  const nameA = (a.name || '').toLowerCase();
-                  const nameB = (b.name || '').toLowerCase();
-                  return nameA.localeCompare(nameB);
-                });
-              }
-
-              // Update zIndex to match array order
-              updatedLayers = updatedLayers.map((layer, index) => ({
-                ...layer,
-                zIndex: index
-              }));
-
-              setLayers(updatedLayers);
-              pushHistory(updatedLayers);
-
-              // Auto calculate grid layout dimensions (prefer more rows than columns)
-              const totalImages = updatedLayers.length;
-              if (totalImages > 0) {
-                // Calculate optimal rows and columns, preferring vertical (more rows)
-                // Start with square root and adjust to prefer taller grids
-                const sqrt = Math.sqrt(totalImages);
-                let cols = Math.floor(sqrt);
-                let rows = Math.ceil(totalImages / cols);
-
-                // If it's close to square, prefer more rows
-                // For example: 6 images -> 3x2 instead of 2x3
-                if (cols * rows >= totalImages && rows <= cols) {
-                  // Swap to make it taller
-                  [rows, cols] = [cols, rows];
-                }
-
-                // No maximum limit for rows and cols
-
-                setSettings((prev: AppSettings) => ({...prev, gridRows: rows, gridCols: cols}));
-              }
-
-              // Auto hide sidebar and fit view
-              if (isSidebarOpen) {
-                  setIsSidebarOpen(false);
-                  // Wait for transition (300ms) to finish so we calculate fit based on full width
-                  setTimeout(() => handleFitView(updatedLayers), 350);
-              } else {
-                  handleFitView(updatedLayers);
-              }
+              finishImport();
             }
           };
           img.src = ev.target?.result as string;
         };
         reader.readAsDataURL(file);
       });
+
+      function finishImport() {
+        if (newLayers.length === 0) {
+          showToast('所有图片加载失败', 'error');
+          return;
+        }
+
+        // Sort new layers by name before adding them
+        const sortedNewLayers = newLayers.sort((a, b) => {
+          const nameA = (a.name || '').toLowerCase();
+          const nameB = (b.name || '').toLowerCase();
+          return nameA.localeCompare(nameB);
+        });
+
+        let updatedLayers = [...layers, ...sortedNewLayers];
+
+        // If this is the first import, sort all layers by name (ascending)
+        if (isFirstImport) {
+          updatedLayers = updatedLayers.sort((a, b) => {
+            const nameA = (a.name || '').toLowerCase();
+            const nameB = (b.name || '').toLowerCase();
+            return nameA.localeCompare(nameB);
+          });
+        }
+
+        // Update zIndex to match array order
+        updatedLayers = updatedLayers.map((layer, index) => ({
+          ...layer,
+          zIndex: index
+        }));
+
+        setLayers(updatedLayers);
+        pushHistory(updatedLayers);
+
+        // Show success message
+        if (failedCount > 0) {
+          showToast(`成功导入 ${newLayers.length} 张图片，${failedCount} 张失败`, 'error');
+        } else {
+          showToast(`成功导入 ${newLayers.length} 张图片`, 'success');
+        }
+
+        // Auto calculate grid layout dimensions (prefer more rows than columns)
+        const totalImages = updatedLayers.length;
+        if (totalImages > 0) {
+          // Calculate optimal rows and columns, preferring vertical (more rows)
+          // Start with square root and adjust to prefer taller grids
+          const sqrt = Math.sqrt(totalImages);
+          let cols = Math.floor(sqrt);
+          let rows = Math.ceil(totalImages / cols);
+
+          // If it's close to square, prefer more rows
+          // For example: 6 images -> 3x2 instead of 2x3
+          if (cols * rows >= totalImages && rows <= cols) {
+            // Swap to make it taller
+            [rows, cols] = [cols, rows];
+          }
+
+          // No maximum limit for rows and cols
+
+          setSettings((prev: AppSettings) => ({...prev, gridRows: rows, gridCols: cols}));
+        }
+
+        // Auto hide sidebar and fit view
+        if (isSidebarOpen) {
+            setIsSidebarOpen(false);
+            // Wait for transition (300ms) to finish so we calculate fit based on full width
+            setTimeout(() => handleFitView(updatedLayers), 350);
+        } else {
+            handleFitView(updatedLayers);
+        }
+      }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -1006,15 +1080,98 @@ export default function App() {
 
   // --- Export Logic ---
   const handleExportClick = async (singleLayerId?: string) => {
-    const url = await generateExportUrl(layers, settings, singleLayerId);
-    if (url) {
-      if (singleLayerId) {
-        downloadImage(url);
-      } else {
-        // Save manual version when exporting
-        saveVersion('manual', url);
-        setExportPreviewUrl(url);
+    if (singleLayerId) {
+      // Single layer export - use dialog
+      setShowExportDialog(true);
+    } else {
+      // Full canvas export - show dialog
+      setShowExportDialog(true);
+    }
+  };
+
+  // Calculate estimated size when dialog opens or format changes
+  useEffect(() => {
+    if (showExportDialog && layers.length > 0) {
+      const layersToExport = layers;
+      let bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      layersToExport.forEach(l => {
+        bounds.minX = Math.min(bounds.minX, l.x);
+        bounds.minY = Math.min(bounds.minY, l.y);
+        bounds.maxX = Math.max(bounds.maxX, l.x + l.width);
+        bounds.maxY = Math.max(bounds.maxY, l.y + l.height);
+      });
+
+      const canvasWidth = bounds.maxX - bounds.minX;
+      const canvasHeight = bounds.maxY - bounds.minY;
+      
+      // Calculate scale
+      let totalScale = 0;
+      let scaleCount = 0;
+      layersToExport.forEach(l => {
+        if (l.originalWidth && l.originalHeight) {
+          const scaleX = l.originalWidth / l.width;
+          const scaleY = l.originalHeight / l.height;
+          const scale = Math.max(scaleX, scaleY);
+          totalScale += scale;
+          scaleCount++;
+        }
+      });
+      
+      const avgScale = scaleCount > 0 ? totalScale / scaleCount : 1;
+      const exportScale = Math.min(avgScale, 4);
+      
+      const maxDimension = 16000;
+      let finalScale = exportScale;
+      if (canvasWidth * exportScale > maxDimension || canvasHeight * exportScale > maxDimension) {
+        const scaleByWidth = maxDimension / canvasWidth;
+        const scaleByHeight = maxDimension / canvasHeight;
+        finalScale = Math.min(scaleByWidth, scaleByHeight);
       }
+      
+      const finalWidth = Math.round(canvasWidth * finalScale);
+      const finalHeight = Math.round(canvasHeight * finalScale);
+      
+      // Calculate estimated size
+      const size = estimateExportSize(finalWidth, finalHeight, exportFormat, exportQuality);
+      setEstimatedSize(size);
+    }
+  }, [showExportDialog, exportFormat, exportQuality, layers]);
+
+  const performExport = async (singleLayerId?: string) => {
+    try {
+      setShowExportDialog(false);
+      // Show progress immediately
+      setExportProgress({ progress: 0, message: '准备导出...' });
+      
+      // Small delay to ensure progress bar renders
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const url = await generateExportUrl(
+        layers, 
+        settings, 
+        singleLayerId, 
+        (progress, message) => {
+          setExportProgress({ progress, message });
+        },
+        exportFormat,
+        exportQuality
+      );
+      
+      if (url) {
+        if (singleLayerId) {
+          const extension = exportFormat === 'jpg' ? 'jpg' : 'png';
+          downloadImage(url, `layer-${Date.now()}.${extension}`);
+        } else {
+          // Save manual version when exporting
+          saveVersion('manual', url);
+          setExportPreviewUrl(url);
+        }
+      }
+    } catch (error) {
+      console.error('Export error:', error);
+      showToast('导出失败，请重试', 'error');
+    } finally {
+      setTimeout(() => setExportProgress(null), 500);
     }
   };
 
@@ -1600,18 +1757,81 @@ To restore this version:
                     key={layer.id}
                     onPointerDown={(e) => handlePointerDown(e, layer.id)}
                     onContextMenu={(e) => handleLayerContextMenu(e, layer.id)}
-                    style={{ position: 'absolute', left: layer.x, top: layer.y, width: layer.width, height: layer.height, touchAction: 'none' }}
-                    className={`group select-none cursor-move ${isSelected ? 'ring-2 ring-primary ring-offset-1 ring-offset-transparent' : 'hover:ring-1 hover:ring-slate-500'}`}
+                    style={{ 
+                        position: 'absolute', 
+                        left: layer.x, 
+                        top: layer.y, 
+                        width: layer.width, 
+                        height: layer.height, 
+                        touchAction: 'none',
+                        ...(isSelected && {
+                            outline: `${Math.max(2 / zoom, 1)}px solid #6366f1`,
+                            outlineOffset: `${Math.max(-1 / zoom, -0.5)}px`
+                        })
+                    }}
+                    className="group select-none cursor-move hover:ring-1 hover:ring-slate-500"
                     >
                     <img src={layer.src} alt="layer" className="w-full h-full object-fill pointer-events-none select-none shadow-sm" draggable={false} />
-                    {isSelected && (
+                    {isSelected && (() => {
+                        // Calculate handle size that stays constant regardless of zoom
+                        // Target visual size: 12px, adjust for zoom
+                        const handleSize = 12 / zoom;
+                        const handleOffset = handleSize / 2;
+                        const borderWidth = Math.max(2 / zoom, 0.5); // Minimum 0.5px border
+                        
+                        return (
                         <>
-                        <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nwse-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'nw')} />
-                        <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nesw-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'ne')} />
-                        <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nesw-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'sw')} />
-                        <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-primary cursor-nwse-resize rounded-full shadow-sm z-10" onPointerDown={(e) => handlePointerDown(e, layer.id, 'se')} />
+                        <div 
+                            className="absolute bg-white border-primary cursor-nwse-resize rounded-full shadow-sm z-10" 
+                            style={{
+                                top: -handleOffset,
+                                left: -handleOffset,
+                                width: handleSize,
+                                height: handleSize,
+                                borderWidth: borderWidth,
+                                borderStyle: 'solid'
+                            }}
+                            onPointerDown={(e) => handlePointerDown(e, layer.id, 'nw')} 
+                        />
+                        <div 
+                            className="absolute bg-white border-primary cursor-nesw-resize rounded-full shadow-sm z-10" 
+                            style={{
+                                top: -handleOffset,
+                                right: -handleOffset,
+                                width: handleSize,
+                                height: handleSize,
+                                borderWidth: borderWidth,
+                                borderStyle: 'solid'
+                            }}
+                            onPointerDown={(e) => handlePointerDown(e, layer.id, 'ne')} 
+                        />
+                        <div 
+                            className="absolute bg-white border-primary cursor-nesw-resize rounded-full shadow-sm z-10" 
+                            style={{
+                                bottom: -handleOffset,
+                                left: -handleOffset,
+                                width: handleSize,
+                                height: handleSize,
+                                borderWidth: borderWidth,
+                                borderStyle: 'solid'
+                            }}
+                            onPointerDown={(e) => handlePointerDown(e, layer.id, 'sw')} 
+                        />
+                        <div 
+                            className="absolute bg-white border-primary cursor-nwse-resize rounded-full shadow-sm z-10" 
+                            style={{
+                                bottom: -handleOffset,
+                                right: -handleOffset,
+                                width: handleSize,
+                                height: handleSize,
+                                borderWidth: borderWidth,
+                                borderStyle: 'solid'
+                            }}
+                            onPointerDown={(e) => handlePointerDown(e, layer.id, 'se')} 
+                        />
                         </>
-                    )}
+                        );
+                    })()}
                     </div>
                 );
                 })}
@@ -2114,6 +2334,148 @@ To restore this version:
                 )}
             </AnimatePresence>
             
+            {/* Export Format Dialog */}
+            <AnimatePresence>
+                {showExportDialog && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4"
+                        onClick={() => setShowExportDialog(false)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, y: 20 }}
+                            animate={{ scale: 1, y: 0 }}
+                            exit={{ scale: 0.9, y: 20 }}
+                            className="bg-surface border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-w-md w-full"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800/50">
+                                <h3 className="text-lg font-bold text-white">选择导出格式</h3>
+                                <button onClick={() => setShowExportDialog(false)} className="p-1 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <div className="p-6 space-y-6">
+                                {/* Format Selection */}
+                                <div className="space-y-3">
+                                    <label className="text-sm font-medium text-slate-300">图片格式</label>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <button
+                                            onClick={() => setExportFormat('png')}
+                                            className={`p-4 rounded-lg border-2 transition-all ${
+                                                exportFormat === 'png'
+                                                    ? 'border-primary bg-primary/10'
+                                                    : 'border-slate-700 hover:border-slate-600'
+                                            }`}
+                                        >
+                                            <div className="text-left">
+                                                <div className="font-bold text-white mb-2">PNG</div>
+                                                <div className="flex flex-col gap-1.5">
+                                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
+                                                        <span className="text-emerald-400">✓</span> 支持透明通道
+                                                    </span>
+                                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
+                                                        <span className="text-emerald-400">✓</span> 无损压缩
+                                                    </span>
+                                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-red-500/20 text-red-400 rounded-full w-fit">
+                                                        <span className="text-red-400">✗</span> 文件较大
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </button>
+                                        <button
+                                            onClick={() => setExportFormat('jpg')}
+                                            className={`p-4 rounded-lg border-2 transition-all ${
+                                                exportFormat === 'jpg'
+                                                    ? 'border-primary bg-primary/10'
+                                                    : 'border-slate-700 hover:border-slate-600'
+                                            }`}
+                                        >
+                                            <div className="text-left">
+                                                <div className="font-bold text-white mb-2">JPG</div>
+                                                <div className="flex flex-col gap-1.5">
+                                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-red-500/20 text-red-400 rounded-full w-fit">
+                                                        <span className="text-red-400">✗</span> 不支持透明
+                                                    </span>
+                                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
+                                                        <span className="text-emerald-400">✓</span> 文件较小
+                                                    </span>
+                                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
+                                                        <span className="text-emerald-400">✓</span> 兼容性好
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Quality Slider for JPG */}
+                                {exportFormat === 'jpg' && (
+                                    <div className="space-y-3" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-sm font-medium text-slate-300">图片质量</label>
+                                            <span className="text-sm text-slate-400">{Math.round(exportQuality * 100)}%</span>
+                                        </div>
+                                        <div className="relative h-5">
+                                            {/* Visible track */}
+                                            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-2 bg-slate-700 rounded-lg pointer-events-none">
+                                                {/* Filled portion */}
+                                                <div 
+                                                    className="h-full bg-gradient-to-r from-indigo-500 to-primary rounded-lg transition-all duration-150"
+                                                    style={{ width: `${(exportQuality - 0.5) / 0.5 * 100}%` }}
+                                                />
+                                            </div>
+                                            <input
+                                                type="range"
+                                                min="0.5"
+                                                max="1"
+                                                step="0.05"
+                                                value={exportQuality}
+                                                onChange={(e) => setExportQuality(parseFloat(e.target.value))}
+                                                onPointerDown={(e) => e.stopPropagation()}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                                className="absolute inset-0 w-full appearance-none cursor-pointer slider bg-transparent"
+                                            />
+                                        </div>
+                                        <div className="flex justify-between text-xs text-slate-500">
+                                            <span>较小文件</span>
+                                            <span>高质量</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Estimated Size */}
+                                <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-slate-400">预估文件大小</span>
+                                        <span className="text-lg font-bold text-primary">{estimatedSize}</span>
+                                    </div>
+                                </div>
+
+                                {/* Action Buttons */}
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setShowExportDialog(false)}
+                                        className="flex-1 px-4 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700 transition-colors font-medium"
+                                    >
+                                        取消
+                                    </button>
+                                    <button
+                                        onClick={() => performExport()}
+                                        className="flex-1 px-4 py-2.5 rounded-lg bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 transition-colors font-medium flex items-center justify-center gap-2"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        导出
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            
             {/* Export Preview Modal */}
             <AnimatePresence>
                 {exportPreviewUrl && (
@@ -2156,7 +2518,11 @@ To restore this version:
                                         {translations[lang].close}
                                     </button>
                                     <button
-                                        onClick={() => { downloadImage(exportPreviewUrl as string); setExportPreviewUrl(null); }}
+                                        onClick={() => { 
+                                            const extension = exportFormat === 'jpg' ? 'jpg' : 'png';
+                                            downloadImage(exportPreviewUrl as string, `collage-${Date.now()}.${extension}`); 
+                                            setExportPreviewUrl(null); 
+                                        }}
                                         className="px-6 py-2 rounded-lg bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 font-medium text-sm flex items-center gap-2"
                                     >
                                         <Download className="w-4 h-4" />
@@ -2252,6 +2618,32 @@ To restore this version:
                     </AnimatePresence>
                 </div>
             </div>
+
+            {/* Export Progress Bar */}
+            <AnimatePresence>
+                {exportProgress && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -20 }}
+                        className="fixed top-20 left-1/2 -translate-x-1/2 z-70 bg-surface border border-slate-700 rounded-lg shadow-2xl p-4 min-w-[320px]"
+                    >
+                        <div className="flex items-center gap-3 mb-2">
+                            <Download className="w-5 h-5 text-primary animate-pulse" />
+                            <span className="text-sm font-medium text-white">{exportProgress.message}</span>
+                        </div>
+                        <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                            <motion.div
+                                initial={{ width: 0 }}
+                                animate={{ width: `${exportProgress.progress}%` }}
+                                transition={{ duration: 0.3, ease: "easeOut" }}
+                                className="h-full bg-gradient-to-r from-indigo-500 to-primary rounded-full"
+                            />
+                        </div>
+                        <div className="text-xs text-slate-400 mt-1 text-right">{exportProgress.progress}%</div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             {/* Toast Notification */}
             <AnimatePresence>
