@@ -141,7 +141,7 @@ export const calculateGridDimension = (totalImages: number, knownDimension: numb
   }
 };
 
-// Estimate export file size
+// Estimate export file size (improved algorithm)
 export const estimateExportSize = (
   width: number,
   height: number,
@@ -152,13 +152,21 @@ export const estimateExportSize = (
   let estimatedBytes: number;
   
   if (format === 'png') {
-    // PNG: roughly 3-4 bytes per pixel (with compression)
-    estimatedBytes = pixels * 3.5;
+    // PNG: more accurate estimation based on real-world data
+    // Base: ~3 bytes per pixel, with compression factor
+    const baseBytes = pixels * 3;
+    const compressionFactor = 0.7; // PNG compression typically achieves 70% of uncompressed
+    estimatedBytes = baseBytes * compressionFactor;
   } else {
-    // JPG: quality-dependent, roughly 0.5-2 bytes per pixel
-    const baseSize = pixels * 1.5;
-    estimatedBytes = baseSize * quality;
+    // JPG: more accurate quality-based estimation
+    // Use non-linear relationship between quality and file size
+    const baseBytes = pixels * 0.3; // Base size at low quality
+    const qualityFactor = 0.5 + (quality * 2.5); // Range from 0.5x to 3x
+    estimatedBytes = baseBytes * qualityFactor;
   }
+  
+  // Add overhead for metadata (typically 1-5KB)
+  estimatedBytes += 3000;
   
   // Convert to readable format
   if (estimatedBytes < 1024) {
@@ -167,5 +175,224 @@ export const estimateExportSize = (
     return `${(estimatedBytes / 1024).toFixed(1)} KB`;
   } else {
     return `${(estimatedBytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+};
+
+// Get actual file size from data URL
+export const getDataUrlSize = (dataUrl: string): number => {
+  // Remove data URL prefix to get base64 string
+  const base64 = dataUrl.split(',')[1] || dataUrl;
+  // Calculate size: base64 length * 0.75 (base64 to binary conversion)
+  return base64.length * 0.75;
+};
+
+// Convert bytes to MB
+export const bytesToMB = (bytes: number): number => {
+  return bytes / (1024 * 1024);
+};
+
+// Export with target file size control
+export const generateExportUrlWithTargetSize = async (
+  layers: CanvasLayer[],
+  settings: AppSettings,
+  targetSizeMB: number,
+  format: 'png' | 'jpg',
+  singleLayerId?: string,
+  onProgress?: (progress: number, message: string) => void,
+  initialQuality: number = 0.95,
+  initialWidth?: number,
+  initialHeight?: number
+): Promise<string | null> => {
+  const targetSizeBytes = targetSizeMB * 1024 * 1024;
+  const tolerance = 0.1; // 10% tolerance
+  
+  onProgress?.(0, '开始智能导出...');
+  
+  if (format === 'jpg') {
+    // For JPG: adjust quality to meet target size
+    let quality = initialQuality;
+    let minQuality = 0.3;
+    let maxQuality = 1.0;
+    let attempts = 0;
+    const maxAttempts = 8;
+    
+    while (attempts < maxAttempts) {
+      onProgress?.(attempts * 10, `尝试导出 (质量: ${Math.round(quality * 100)}%)...`);
+      
+      const url = await generateExportUrl(
+        layers,
+        settings,
+        singleLayerId,
+        (p, m) => onProgress?.(attempts * 10 + p / 10, m),
+        format,
+        quality,
+        initialWidth,
+        initialHeight
+      );
+      
+      if (!url) return null;
+      
+      const actualSize = getDataUrlSize(url);
+      const actualSizeMB = bytesToMB(actualSize);
+      
+      onProgress?.(attempts * 10 + 10, `当前大小: ${actualSizeMB.toFixed(2)} MB`);
+      
+      // Check if within tolerance
+      const ratio = actualSize / targetSizeBytes;
+      if (ratio >= (1 - tolerance) && ratio <= (1 + tolerance)) {
+        onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB`);
+        return url;
+      }
+      
+      // Adjust quality using binary search
+      if (actualSize > targetSizeBytes) {
+        maxQuality = quality;
+        quality = (minQuality + quality) / 2;
+      } else {
+        minQuality = quality;
+        quality = (quality + maxQuality) / 2;
+      }
+      
+      // Prevent too low quality
+      if (quality < 0.3) {
+        onProgress?.(100, `已达最低质量，文件大小: ${actualSizeMB.toFixed(2)} MB`);
+        return url;
+      }
+      
+      attempts++;
+      
+      // If difference is small enough, accept it
+      if (Math.abs(ratio - 1) < tolerance * 2) {
+        onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB`);
+        return url;
+      }
+    }
+    
+    // Return last attempt if max attempts reached
+    const finalUrl = await generateExportUrl(
+      layers,
+      settings,
+      singleLayerId,
+      undefined,
+      format,
+      quality,
+      initialWidth,
+      initialHeight
+    );
+    return finalUrl;
+    
+  } else {
+    // For PNG: adjust resolution to meet target size
+    // Calculate initial dimensions if not provided
+    if (!initialWidth || !initialHeight) {
+      const layersToExport = singleLayerId ? layers.filter(l => l.id === singleLayerId) : layers;
+      let bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      layersToExport.forEach(l => {
+        bounds.minX = Math.min(bounds.minX, l.x);
+        bounds.minY = Math.min(bounds.minY, l.y);
+        bounds.maxX = Math.max(bounds.maxX, l.x + l.width);
+        bounds.maxY = Math.max(bounds.maxY, l.y + l.height);
+      });
+      
+      const canvasWidth = bounds.maxX - bounds.minX;
+      const canvasHeight = bounds.maxY - bounds.minY;
+      
+      let totalScale = 0;
+      let scaleCount = 0;
+      layersToExport.forEach(l => {
+        if (l.originalWidth && l.originalHeight) {
+          const scaleX = l.originalWidth / l.width;
+          const scaleY = l.originalHeight / l.height;
+          const scale = Math.max(scaleX, scaleY);
+          totalScale += scale;
+          scaleCount++;
+        }
+      });
+      
+      const avgScale = scaleCount > 0 ? totalScale / scaleCount : 1;
+      const exportScale = Math.min(avgScale, 4);
+      
+      initialWidth = Math.round(canvasWidth * exportScale);
+      initialHeight = Math.round(canvasHeight * exportScale);
+    }
+    
+    let width = initialWidth;
+    let height = initialHeight;
+    const aspectRatio = width / height;
+    let scaleFactor = 1.0;
+    let minScale = 0.3;
+    let maxScale = 1.5;
+    let attempts = 0;
+    const maxAttempts = 8;
+    
+    while (attempts < maxAttempts) {
+      const currentWidth = Math.round(width * scaleFactor);
+      const currentHeight = Math.round(height * scaleFactor);
+      
+      onProgress?.(attempts * 10, `尝试导出 (分辨率: ${currentWidth}x${currentHeight})...`);
+      
+      const url = await generateExportUrl(
+        layers,
+        settings,
+        singleLayerId,
+        (p, m) => onProgress?.(attempts * 10 + p / 10, m),
+        format,
+        0.95,
+        currentWidth,
+        currentHeight
+      );
+      
+      if (!url) return null;
+      
+      const actualSize = getDataUrlSize(url);
+      const actualSizeMB = bytesToMB(actualSize);
+      
+      onProgress?.(attempts * 10 + 10, `当前大小: ${actualSizeMB.toFixed(2)} MB`);
+      
+      // Check if within tolerance
+      const ratio = actualSize / targetSizeBytes;
+      if (ratio >= (1 - tolerance) && ratio <= (1 + tolerance)) {
+        onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB (${currentWidth}x${currentHeight})`);
+        return url;
+      }
+      
+      // Adjust scale using binary search
+      if (actualSize > targetSizeBytes) {
+        maxScale = scaleFactor;
+        scaleFactor = (minScale + scaleFactor) / 2;
+      } else {
+        minScale = scaleFactor;
+        scaleFactor = (scaleFactor + maxScale) / 2;
+      }
+      
+      // Prevent too low resolution
+      if (currentWidth < 100 || currentHeight < 100) {
+        onProgress?.(100, `已达最低分辨率，文件大小: ${actualSizeMB.toFixed(2)} MB`);
+        return url;
+      }
+      
+      attempts++;
+      
+      // If difference is small enough, accept it
+      if (Math.abs(ratio - 1) < tolerance * 2) {
+        onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB (${currentWidth}x${currentHeight})`);
+        return url;
+      }
+    }
+    
+    // Return last attempt if max attempts reached
+    const finalWidth = Math.round(width * scaleFactor);
+    const finalHeight = Math.round(height * scaleFactor);
+    const finalUrl = await generateExportUrl(
+      layers,
+      settings,
+      singleLayerId,
+      undefined,
+      format,
+      0.95,
+      finalWidth,
+      finalHeight
+    );
+    return finalUrl;
   }
 };

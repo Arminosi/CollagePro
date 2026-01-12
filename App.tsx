@@ -20,7 +20,7 @@ import {
   selectAllLayers as selectAllLayersUtil,
   clearCanvas as clearCanvasUtil
 } from './utils/layerOperations';
-import { generateExportUrl, downloadImage, calculateGridDimension, estimateExportSize } from './utils/exportUtils';
+import { generateExportUrl, downloadImage, calculateGridDimension, estimateExportSize, generateExportUrlWithTargetSize } from './utils/exportUtils';
 import { handleAlign as handleAlignUtil, handleAutoStitch as handleAutoStitchUtil } from './utils/alignmentUtils';
 import { handleGridLayout as handleGridLayoutUtil } from './utils/gridLayoutUtils';
 import { getCanvasCoordinates, zoomAtPoint as zoomAtPointUtil, handleFitView as handleFitViewUtil, getBackgroundStyle } from './utils/canvasUtils';
@@ -56,12 +56,26 @@ export default function App() {
   const [isCustomResolution, setIsCustomResolution] = useState(false);
   const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const [aspectRatio, setAspectRatio] = useState(1);
+  const [targetFileSize, setTargetFileSize] = useState(5); // 目标文件大小（MB）
+  const [targetFileSizeInput, setTargetFileSizeInput] = useState('5'); // 目标文件大小输入值（字符串）
+  const [enableTargetSize, setEnableTargetSize] = useState(false); // 是否启用目标文件大小控制
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
   const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [exportProgress, setExportProgress] = useState<{ progress: number; message: string } | null>(null);
+  const [showGifWarning, setShowGifWarning] = useState(false);
+  const [gifWarningClickCount, setGifWarningClickCount] = useState(0);
+  const [detectedGifCount, setDetectedGifCount] = useState(0);
+  const [showImageInfo, setShowImageInfo] = useState(false);
+  const [imageInfoData, setImageInfoData] = useState<{
+    name: string;
+    width: number;
+    height: number;
+    size: string;
+    format: string;
+  } | null>(null);
 
   // Toast notification helper
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
@@ -146,8 +160,17 @@ export default function App() {
       // Filter and validate files
       const validFiles: File[] = [];
       const invalidFiles: string[] = [];
+      const gifFiles: File[] = [];
 
       Array.from(files).forEach(file => {
+        // 检测GIF文件
+        const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+        
+        if (isGif) {
+          gifFiles.push(file);
+          return; // 跳过GIF文件
+        }
+        
         const isValidType = supportedFormats.includes(file.type);
         const hasValidExtension = supportedExtensions.some(ext => 
           file.name.toLowerCase().endsWith(ext)
@@ -160,6 +183,12 @@ export default function App() {
         }
       });
 
+      // 显示GIF警告
+      if (gifFiles.length > 0) {
+        setDetectedGifCount(gifFiles.length);
+        setShowGifWarning(true);
+      }
+
       // Show warning for invalid files
       if (invalidFiles.length > 0) {
         const fileList = invalidFiles.slice(0, 3).join(', ') + (invalidFiles.length > 3 ? ` 等${invalidFiles.length}个文件` : '');
@@ -167,8 +196,11 @@ export default function App() {
       }
 
       if (validFiles.length === 0) {
-        if (invalidFiles.length > 0) {
-          showToast('没有找到支持的图片文件', 'error');
+        if (invalidFiles.length > 0 || gifFiles.length > 0) {
+          // 如果只有GIF文件，不显示额外的错误信息
+          if (invalidFiles.length > 0 && gifFiles.length === 0) {
+            showToast('没有找到支持的图片文件', 'error');
+          }
         }
         return;
       }
@@ -1033,6 +1065,64 @@ export default function App() {
     setContextMenu({ x: e.clientX, y: e.clientY });
   };
 
+  // Show image info for selected layer
+  const handleShowImageInfo = () => {
+    if (selectedIds.size === 1) {
+      const layerId = Array.from(selectedIds)[0];
+      const layer = layers.find(l => l.id === layerId);
+      if (layer) {
+        // 计算文件大小
+        const base64 = layer.src.split(',')[1] || layer.src;
+        const sizeBytes = base64.length * 0.75;
+        let sizeStr = '';
+        if (sizeBytes < 1024) {
+          sizeStr = `${Math.round(sizeBytes)} B`;
+        } else if (sizeBytes < 1024 * 1024) {
+          sizeStr = `${(sizeBytes / 1024).toFixed(1)} KB`;
+        } else {
+          sizeStr = `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+        }
+        
+        // 检测格式
+        let format = 'Unknown';
+        if (layer.src.includes('data:image/')) {
+          const match = layer.src.match(/data:image\/(\w+);/);
+          if (match) {
+            format = match[1].toUpperCase();
+          }
+        } else if (layer.name) {
+          const ext = layer.name.split('.').pop()?.toUpperCase();
+          if (ext) format = ext;
+        }
+        
+        setImageInfoData({
+          name: layer.name || '未命名',
+          width: layer.originalWidth || Math.round(layer.width),
+          height: layer.originalHeight || Math.round(layer.height),
+          size: sizeStr,
+          format: format
+        });
+        setShowImageInfo(true);
+      }
+    }
+  };
+
+  // Download original image directly (without any processing)
+  const handleDownloadOriginal = () => {
+    if (selectedIds.size > 0) {
+      selectedIds.forEach(id => {
+        const layer = layers.find(l => l.id === id);
+        if (layer) {
+          // 直接下载原图
+          const link = document.createElement('a');
+          link.href = layer.src;
+          link.download = layer.name || `image-${Date.now()}.png`;
+          link.click();
+        }
+      });
+    }
+  };
+
   // --- Deletion & Layer Order ---
   const deleteSelected = useCallback(() => {
     const newLayers = deleteLayersUtil(layers, Array.from(selectedIds));
@@ -1150,13 +1240,57 @@ export default function App() {
         setAspectRatio(finalWidth / finalHeight);
       }
       
-      // Calculate estimated size
+      // Calculate file size
       const width = isCustomResolution ? exportWidth : finalWidth;
       const height = isCustomResolution ? exportHeight : finalHeight;
-      const size = estimateExportSize(width, height, exportFormat, exportQuality);
-      setEstimatedSize(size);
+      
+      // 分辨率阈值：小于此值直接导出获取真实大小，大于此值使用预估
+      const resolutionThreshold = 2000 * 2000; // 2000x2000 像素
+      const totalPixels = width * height;
+      
+      if (totalPixels <= resolutionThreshold) {
+        // 分辨率较小，直接导出获取真实文件大小
+        setEstimatedSize('计算中...');
+        
+        generateExportUrl(
+          layers,
+          settings,
+          undefined,
+          undefined,
+          exportFormat,
+          exportQuality,
+          isCustomResolution ? width : undefined,
+          isCustomResolution ? height : undefined
+        ).then(url => {
+          if (url) {
+            // 从 Data URL 计算实际文件大小
+            const base64 = url.split(',')[1] || url;
+            const sizeBytes = base64.length * 0.75;
+            
+            if (sizeBytes < 1024) {
+              setEstimatedSize(`${Math.round(sizeBytes)} B`);
+            } else if (sizeBytes < 1024 * 1024) {
+              setEstimatedSize(`${(sizeBytes / 1024).toFixed(1)} KB`);
+            } else {
+              setEstimatedSize(`${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`);
+            }
+          } else {
+            // 如果导出失败，回退到预估
+            const size = estimateExportSize(width, height, exportFormat, exportQuality);
+            setEstimatedSize(size + ' (预估)');
+          }
+        }).catch(() => {
+          // 出错时回退到预估
+          const size = estimateExportSize(width, height, exportFormat, exportQuality);
+          setEstimatedSize(size + ' (预估)');
+        });
+      } else {
+        // 分辨率较大，使用预估算法避免卡顿
+        const size = estimateExportSize(width, height, exportFormat, exportQuality);
+        setEstimatedSize(size + ' (预估)');
+      }
     }
-  }, [showExportDialog, exportFormat, exportQuality, layers, isCustomResolution, exportWidth, exportHeight]);
+  }, [showExportDialog, exportFormat, exportQuality, layers, isCustomResolution, exportWidth, exportHeight, settings]);
 
   // Handle width change with aspect ratio lock
   const handleWidthChange = (value: number) => {
@@ -1185,18 +1319,38 @@ export default function App() {
       // Small delay to ensure progress bar renders
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      const url = await generateExportUrl(
-        layers, 
-        settings, 
-        singleLayerId, 
-        (progress, message) => {
-          setExportProgress({ progress, message });
-        },
-        exportFormat,
-        exportQuality,
-        isCustomResolution ? exportWidth : undefined,
-        isCustomResolution ? exportHeight : undefined
-      );
+      let url: string | null;
+      
+      // Use target size export if enabled
+      if (enableTargetSize && targetFileSize > 0) {
+        url = await generateExportUrlWithTargetSize(
+          layers,
+          settings,
+          targetFileSize,
+          exportFormat,
+          singleLayerId,
+          (progress, message) => {
+            setExportProgress({ progress, message });
+          },
+          exportQuality,
+          isCustomResolution ? exportWidth : undefined,
+          isCustomResolution ? exportHeight : undefined
+        );
+      } else {
+        // Normal export
+        url = await generateExportUrl(
+          layers, 
+          settings, 
+          singleLayerId, 
+          (progress, message) => {
+            setExportProgress({ progress, message });
+          },
+          exportFormat,
+          exportQuality,
+          isCustomResolution ? exportWidth : undefined,
+          isCustomResolution ? exportHeight : undefined
+        );
+      }
       
       if (url) {
         if (singleLayerId) {
@@ -2499,6 +2653,67 @@ To restore this version:
                                     </div>
                                 </div>
 
+                                {/* Target File Size */}
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-sm font-medium text-slate-300">目标文件大小</label>
+                                        <button
+                                            onClick={() => setEnableTargetSize(!enableTargetSize)}
+                                            className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                                                enableTargetSize 
+                                                    ? 'bg-primary text-white' 
+                                                    : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                                            }`}
+                                        >
+                                            {enableTargetSize ? '已启用' : '已禁用'}
+                                        </button>
+                                    </div>
+                                    {enableTargetSize && (
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <input
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    value={targetFileSizeInput}
+                                                    onChange={(e) => {
+                                                        const value = e.target.value;
+                                                        // 允许空值、数字和小数点
+                                                        if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                                                            setTargetFileSizeInput(value);
+                                                        }
+                                                    }}
+                                                    onBlur={(e) => {
+                                                        const value = e.target.value;
+                                                        const numValue = parseFloat(value);
+                                                        // 失去焦点时验证和限制
+                                                        if (isNaN(numValue) || numValue < 0.1) {
+                                                            setTargetFileSize(0.1);
+                                                            setTargetFileSizeInput('0.1');
+                                                        } else {
+                                                            setTargetFileSize(numValue);
+                                                            setTargetFileSizeInput(numValue.toString());
+                                                        }
+                                                    }}
+                                                    onKeyDown={(e) => {
+                                                        // 按回车键时失去焦点
+                                                        if (e.key === 'Enter') {
+                                                            e.currentTarget.blur();
+                                                        }
+                                                    }}
+                                                    className="flex-1 px-3 py-2 rounded-lg border bg-slate-700 border-slate-600 text-white text-sm font-mono"
+                                                    placeholder="0.1"
+                                                />
+                                                <span className="text-sm text-slate-400 font-medium">MB</span>
+                                            </div>
+                                            <div className="text-xs text-slate-500 mt-2">
+                                                {exportFormat === 'jpg' 
+                                                    ? '系统将自动调整图片质量以达到目标大小' 
+                                                    : '系统将自动调整输出分辨率以达到目标大小'}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
                                 {/* Resolution Settings */}
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
@@ -2610,6 +2825,97 @@ To restore this version:
                 )}
             </AnimatePresence>
             
+            {/* GIF Warning Modal */}
+            <AnimatePresence>
+                {showGifWarning && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4"
+                        onClick={() => {
+                            setShowGifWarning(false);
+                            setGifWarningClickCount(0);
+                        }}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, y: 20 }}
+                            animate={{ scale: 1, y: 0 }}
+                            exit={{ scale: 0.9, y: 20 }}
+                            className="bg-surface border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-w-md w-full"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800/50">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-10 h-10 rounded-lg bg-amber-500/20 flex items-center justify-center">
+                                        <svg className="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                        </svg>
+                                    </div>
+                                    <h3 className="text-lg font-bold text-white">不支持 GIF 格式</h3>
+                                </div>
+                                <button 
+                                    onClick={() => {
+                                        setShowGifWarning(false);
+                                        setGifWarningClickCount(0);
+                                    }} 
+                                    className="p-1 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <div className="p-6 space-y-4">
+                                <div className="text-slate-300 space-y-3">
+                                    <p>
+                                        检测到 <span className="font-bold text-amber-400">{detectedGifCount}</span> 个 GIF 文件。
+                                        本页面暂不支持 GIF 动图导入。
+                                    </p>
+                                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+                                        <p className="text-sm text-slate-400 mb-2">💡 建议方案：</p>
+                                        <p className="text-sm">使用 <span className="font-bold text-primary">GifBuilder</span> 工具提取 GIF 的单帧图片后导入</p>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col gap-3">
+                                    <button
+                                        onClick={() => {
+                                            const newCount = gifWarningClickCount + 1;
+                                            setGifWarningClickCount(newCount);
+                                            
+                                            if (newCount >= 2) {
+                                                // 第二次点击，打开网站
+                                                window.open('https://gif.qwq.team', '_blank', 'noopener,noreferrer');
+                                                setShowGifWarning(false);
+                                                setGifWarningClickCount(0);
+                                            }
+                                        }}
+                                        className={`w-full px-4 py-3 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
+                                            gifWarningClickCount >= 1
+                                                ? 'bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                                                : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                        }`}
+                                    >
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                        </svg>
+                                        {gifWarningClickCount >= 1 ? '再次点击确认前往' : '前往 GifBuilder (gif.qwq.team)'}
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setShowGifWarning(false);
+                                            setGifWarningClickCount(0);
+                                        }}
+                                        className="w-full px-4 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700 transition-colors font-medium"
+                                    >
+                                        我知道了
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            
             {/* Export Preview Modal */}
             <AnimatePresence>
                 {exportPreviewUrl && (
@@ -2669,6 +2975,84 @@ To restore this version:
                 )}
             </AnimatePresence>
 
+            {/* Image Info Modal */}
+            <AnimatePresence>
+                {showImageInfo && imageInfoData && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4"
+                        onClick={() => setShowImageInfo(false)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, y: 20 }}
+                            animate={{ scale: 1, y: 0 }}
+                            exit={{ scale: 0.9, y: 20 }}
+                            className="bg-surface border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-w-md w-full"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800/50">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
+                                        <Info className="w-6 h-6 text-primary" />
+                                    </div>
+                                    <h3 className="text-lg font-bold text-white">原图信息</h3>
+                                </div>
+                                <button 
+                                    onClick={() => setShowImageInfo(false)} 
+                                    className="p-1 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <div className="p-6 space-y-4">
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between py-2 border-b border-slate-700">
+                                        <span className="text-sm text-slate-400">文件名</span>
+                                        <span className="text-sm font-medium text-white truncate ml-4 max-w-[60%]" title={imageInfoData.name}>
+                                            {imageInfoData.name}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-2 border-b border-slate-700">
+                                        <span className="text-sm text-slate-400">分辨率</span>
+                                        <span className="text-sm font-bold text-primary">
+                                            {imageInfoData.width} × {imageInfoData.height}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-2 border-b border-slate-700">
+                                        <span className="text-sm text-slate-400">文件大小</span>
+                                        <span className="text-sm font-medium text-white">{imageInfoData.size}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-2">
+                                        <span className="text-sm text-slate-400">格式</span>
+                                        <span className="text-sm font-medium text-white">{imageInfoData.format}</span>
+                                    </div>
+                                </div>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setShowImageInfo(false)}
+                                        className="flex-1 px-4 py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white transition-colors font-medium"
+                                    >
+                                        关闭
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            handleDownloadOriginal();
+                                            setShowImageInfo(false);
+                                        }}
+                                        className="flex-1 px-4 py-2.5 rounded-lg bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 transition-colors font-medium flex items-center justify-center gap-2"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        下载原图
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
             {contextMenu && (
                 <ContextMenu
                     x={contextMenu.x}
@@ -2677,17 +3061,40 @@ To restore this version:
                     onDelete={deleteSelected}
                     onBringToFront={bringToFront}
                     onSendToBack={sendToBack}
-                    onDownload={() => {
-                        // Download single image
-                        const id = Array.from(selectedIds)[0] as string;
-                        handleExportClick(id);
-                    }}
+                    onDownload={handleDownloadOriginal}
+                    onShowImageInfo={handleShowImageInfo}
                     hasSelection={selectedIds.size > 0}
+                    isSingleSelection={selectedIds.size === 1}
                     lang={lang}
                     onFitView={() => handleFitView()}
                     onSelectAll={selectAllLayers}
                     onDeselectAll={() => setSelectedIds(new Set())}
                 />
+            )}
+
+            {/* Canvas Resolution Info (bottom-right corner) */}
+            {layers.length > 0 && (
+                <div className="fixed bottom-6 right-20 z-40 pointer-events-none">
+                    <div className="bg-surface/95 backdrop-blur-xl border border-slate-700/50 shadow-xl rounded-lg px-3 py-2">
+                        <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-400">画布:</span>
+                            <span className="font-mono font-bold text-primary">
+                                {(() => {
+                                    let bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+                                    layers.forEach(l => {
+                                        bounds.minX = Math.min(bounds.minX, l.x);
+                                        bounds.minY = Math.min(bounds.minY, l.y);
+                                        bounds.maxX = Math.max(bounds.maxX, l.x + l.width);
+                                        bounds.maxY = Math.max(bounds.maxY, l.y + l.height);
+                                    });
+                                    const width = Math.round(bounds.maxX - bounds.minX);
+                                    const height = Math.round(bounds.maxY - bounds.minY);
+                                    return `${width} × ${height}`;
+                                })()}
+                            </span>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Shortcuts Guide Button (Desktop only, bottom-right corner) */}

@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import React from 'react';
-import { Trash2, ArrowUp, ArrowDown, Download, Maximize, Layers, X } from 'lucide-react';
+import { Trash2, ArrowUp, ArrowDown, Download, Maximize, Layers, X, Info } from 'lucide-react';
 import { Language } from '../types';
 import { translations } from '../utils/i18n';
 
@@ -12,7 +12,9 @@ interface ContextMenuProps {
   onBringToFront: () => void;
   onSendToBack: () => void;
   onDownload: () => void;
+  onShowImageInfo?: () => void;
   hasSelection: boolean;
+  isSingleSelection?: boolean;
   lang: Language;
   onFitView?: () => void;
   onSelectAll?: () => void;
@@ -27,7 +29,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onBringToFront,
   onSendToBack,
   onDownload,
+  onShowImageInfo,
   hasSelection,
+  isSingleSelection,
   lang,
   onFitView,
   onSelectAll,
@@ -62,6 +66,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             <button onClick={() => { onDownload(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
               <Download className="w-4 h-4 mr-2" /> {t.saveImage}
             </button>
+            {isSingleSelection && onShowImageInfo && (
+              <button onClick={() => { onShowImageInfo(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
+                <Info className="w-4 h-4 mr-2" /> {lang === 'zh' ? '显示原图信息' : 'Show Image Info'}
+              </button>
+            )}
             <div className="h-px bg-slate-700 my-1" />
             {onFitView && (
               <button onClick={() => { onFitView(); onClose(); }} className="flex items-center px-4 py-2 hover:bg-slate-700 text-left">
