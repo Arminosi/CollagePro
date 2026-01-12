@@ -6,7 +6,9 @@ export const generateExportUrl = async (
   singleLayerId?: string,
   onProgress?: (progress: number, message: string) => void,
   format: 'png' | 'jpg' = 'png',
-  quality: number = 0.95
+  quality: number = 0.95,
+  customWidth?: number,
+  customHeight?: number
 ): Promise<string | null> => {
   const canvas = document.createElement('canvas');
   let layersToExport = singleLayerId ? layers.filter(l => l.id === singleLayerId) : layers;
@@ -27,35 +29,44 @@ export const generateExportUrl = async (
   const canvasWidth = bounds.maxX - bounds.minX + padding * 2;
   const canvasHeight = bounds.maxY - bounds.minY + padding * 2;
   
-  // Optimize: Calculate reasonable scale based on average instead of maximum
-  // This prevents one high-res image from making the entire canvas huge
-  let totalScale = 0;
-  let scaleCount = 0;
-  layersToExport.forEach(l => {
-    if (l.originalWidth && l.originalHeight) {
-      const scaleX = l.originalWidth / l.width;
-      const scaleY = l.originalHeight / l.height;
-      const scale = Math.max(scaleX, scaleY);
-      totalScale += scale;
-      scaleCount++;
+  let finalScale: number;
+  
+  // If custom dimensions are provided, use them directly
+  if (customWidth && customHeight) {
+    canvas.width = customWidth;
+    canvas.height = customHeight;
+    finalScale = Math.min(customWidth / canvasWidth, customHeight / canvasHeight);
+  } else {
+    // Optimize: Calculate reasonable scale based on average instead of maximum
+    // This prevents one high-res image from making the entire canvas huge
+    let totalScale = 0;
+    let scaleCount = 0;
+    layersToExport.forEach(l => {
+      if (l.originalWidth && l.originalHeight) {
+        const scaleX = l.originalWidth / l.width;
+        const scaleY = l.originalHeight / l.height;
+        const scale = Math.max(scaleX, scaleY);
+        totalScale += scale;
+        scaleCount++;
+      }
+    });
+    
+    // Use average scale, but cap at 4x to prevent extremely large exports
+    const avgScale = scaleCount > 0 ? totalScale / scaleCount : 1;
+    const exportScale = Math.min(avgScale, 4);
+    
+    // Further limit: cap total canvas size to 16000x16000 pixels
+    const maxDimension = 16000;
+    finalScale = exportScale;
+    if (canvasWidth * exportScale > maxDimension || canvasHeight * exportScale > maxDimension) {
+      const scaleByWidth = maxDimension / canvasWidth;
+      const scaleByHeight = maxDimension / canvasHeight;
+      finalScale = Math.min(scaleByWidth, scaleByHeight);
     }
-  });
-  
-  // Use average scale, but cap at 4x to prevent extremely large exports
-  const avgScale = scaleCount > 0 ? totalScale / scaleCount : 1;
-  const exportScale = Math.min(avgScale, 4);
-  
-  // Further limit: cap total canvas size to 16000x16000 pixels
-  const maxDimension = 16000;
-  let finalScale = exportScale;
-  if (canvasWidth * exportScale > maxDimension || canvasHeight * exportScale > maxDimension) {
-    const scaleByWidth = maxDimension / canvasWidth;
-    const scaleByHeight = maxDimension / canvasHeight;
-    finalScale = Math.min(scaleByWidth, scaleByHeight);
+    
+    canvas.width = Math.round(canvasWidth * finalScale);
+    canvas.height = Math.round(canvasHeight * finalScale);
   }
-  
-  canvas.width = Math.round(canvasWidth * finalScale);
-  canvas.height = Math.round(canvasHeight * finalScale);
   
   onProgress?.(10, `创建 ${canvas.width}x${canvas.height} 画布...`);
   

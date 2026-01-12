@@ -51,6 +51,11 @@ export default function App() {
   const [exportFormat, setExportFormat] = useState<'png' | 'jpg'>('png');
   const [exportQuality, setExportQuality] = useState(0.95);
   const [estimatedSize, setEstimatedSize] = useState<string>('');
+  const [exportWidth, setExportWidth] = useState(0);
+  const [exportHeight, setExportHeight] = useState(0);
+  const [isCustomResolution, setIsCustomResolution] = useState(false);
+  const [lockAspectRatio, setLockAspectRatio] = useState(true);
+  const [aspectRatio, setAspectRatio] = useState(1);
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
@@ -1089,6 +1094,13 @@ export default function App() {
     }
   };
 
+  // Close export dialog and reset custom resolution
+  const closeExportDialog = () => {
+    setShowExportDialog(false);
+    setIsCustomResolution(false);
+    setLockAspectRatio(true);
+  };
+
   // Calculate estimated size when dialog opens or format changes
   useEffect(() => {
     if (showExportDialog && layers.length > 0) {
@@ -1131,11 +1143,38 @@ export default function App() {
       const finalWidth = Math.round(canvasWidth * finalScale);
       const finalHeight = Math.round(canvasHeight * finalScale);
       
+      // Set initial resolution and aspect ratio
+      if (!isCustomResolution) {
+        setExportWidth(finalWidth);
+        setExportHeight(finalHeight);
+        setAspectRatio(finalWidth / finalHeight);
+      }
+      
       // Calculate estimated size
-      const size = estimateExportSize(finalWidth, finalHeight, exportFormat, exportQuality);
+      const width = isCustomResolution ? exportWidth : finalWidth;
+      const height = isCustomResolution ? exportHeight : finalHeight;
+      const size = estimateExportSize(width, height, exportFormat, exportQuality);
       setEstimatedSize(size);
     }
-  }, [showExportDialog, exportFormat, exportQuality, layers]);
+  }, [showExportDialog, exportFormat, exportQuality, layers, isCustomResolution, exportWidth, exportHeight]);
+
+  // Handle width change with aspect ratio lock
+  const handleWidthChange = (value: number) => {
+    const newWidth = Math.max(1, Math.round(value));
+    setExportWidth(newWidth);
+    if (lockAspectRatio && aspectRatio > 0) {
+      setExportHeight(Math.round(newWidth / aspectRatio));
+    }
+  };
+
+  // Handle height change with aspect ratio lock
+  const handleHeightChange = (value: number) => {
+    const newHeight = Math.max(1, Math.round(value));
+    setExportHeight(newHeight);
+    if (lockAspectRatio && aspectRatio > 0) {
+      setExportWidth(Math.round(newHeight * aspectRatio));
+    }
+  };
 
   const performExport = async (singleLayerId?: string) => {
     try {
@@ -1154,7 +1193,9 @@ export default function App() {
           setExportProgress({ progress, message });
         },
         exportFormat,
-        exportQuality
+        exportQuality,
+        isCustomResolution ? exportWidth : undefined,
+        isCustomResolution ? exportHeight : undefined
       );
       
       if (url) {
@@ -1641,7 +1682,11 @@ To restore this version:
                 <Languages className="w-4 h-4" />
                 <span className="hidden md:inline">{lang === 'en' ? 'EN' : '中'}</span>
              </button>
-             <button onClick={() => handleExportClick()} className="bg-primary hover:bg-indigo-600 text-white p-2 md:px-4 md:py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 shadow-lg shadow-indigo-500/20 transition-all">
+             <button 
+                onClick={() => handleExportClick()} 
+                disabled={layers.length === 0}
+                className={`${layers.length === 0 ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'} p-2 md:px-4 md:py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-all`}
+             >
                 <Download className="w-4 h-4" /> 
                 <span className="hidden md:inline">{translations[lang].export}</span>
              </button>
@@ -2342,7 +2387,7 @@ To restore this version:
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4"
-                        onClick={() => setShowExportDialog(false)}
+                        onClick={() => closeExportDialog()}
                     >
                         <motion.div
                             initial={{ scale: 0.9, y: 20 }}
@@ -2353,7 +2398,7 @@ To restore this version:
                         >
                             <div className="flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800/50">
                                 <h3 className="text-lg font-bold text-white">选择导出格式</h3>
-                                <button onClick={() => setShowExportDialog(false)} className="p-1 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors">
+                                <button onClick={() => closeExportDialog()} className="p-1 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
@@ -2454,10 +2499,99 @@ To restore this version:
                                     </div>
                                 </div>
 
+                                {/* Resolution Settings */}
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-sm font-medium text-slate-300">输出分辨率</label>
+                                        <button
+                                            onClick={() => {
+                                                setIsCustomResolution(!isCustomResolution);
+                                                if (isCustomResolution) {
+                                                    // Reset to auto when disabling custom
+                                                    setLockAspectRatio(true);
+                                                }
+                                            }}
+                                            className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                                                isCustomResolution 
+                                                    ? 'bg-primary text-white' 
+                                                    : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                                            }`}
+                                        >
+                                            {isCustomResolution ? '自动' : '自定义'}
+                                        </button>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-start">
+                                        <div>
+                                            <input
+                                                type="number"
+                                                value={exportWidth}
+                                                onChange={(e) => handleWidthChange(parseFloat(e.target.value) || 0)}
+                                                disabled={!isCustomResolution}
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm font-mono ${
+                                                    isCustomResolution
+                                                        ? 'bg-slate-700 border-slate-600 text-white'
+                                                        : 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
+                                                }`}
+                                                min="1"
+                                                step="1"
+                                            />
+                                            <div className="text-xs text-slate-500 mt-1 text-center">宽度 (px)</div>
+                                        </div>
+                                        
+                                        <button
+                                            onClick={() => {
+                                                setLockAspectRatio(!lockAspectRatio);
+                                                if (!lockAspectRatio && exportWidth > 0 && exportHeight > 0) {
+                                                    setAspectRatio(exportWidth / exportHeight);
+                                                }
+                                            }}
+                                            disabled={!isCustomResolution}
+                                            className={`p-2 rounded-lg transition-colors mt-0 ${
+                                                isCustomResolution
+                                                    ? lockAspectRatio
+                                                        ? 'bg-primary text-white hover:bg-indigo-600'
+                                                        : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                                                    : 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                                            }`}
+                                            title={lockAspectRatio ? '已锁定比例' : '未锁定比例'}
+                                        >
+                                            {lockAspectRatio ? (
+                                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <rect x="5" y="11" width="14" height="10" rx="2" />
+                                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                                </svg>
+                                            ) : (
+                                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <rect x="5" y="11" width="14" height="10" rx="2" />
+                                                    <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+                                                </svg>
+                                            )}
+                                        </button>
+                                        
+                                        <div>
+                                            <input
+                                                type="number"
+                                                value={exportHeight}
+                                                onChange={(e) => handleHeightChange(parseFloat(e.target.value) || 0)}
+                                                disabled={!isCustomResolution}
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm font-mono ${
+                                                    isCustomResolution
+                                                        ? 'bg-slate-700 border-slate-600 text-white'
+                                                        : 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
+                                                }`}
+                                                min="1"
+                                                step="1"
+                                            />
+                                            <div className="text-xs text-slate-500 mt-1 text-center">高度 (px)</div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 {/* Action Buttons */}
                                 <div className="flex gap-3">
                                     <button
-                                        onClick={() => setShowExportDialog(false)}
+                                        onClick={() => closeExportDialog()}
                                         className="flex-1 px-4 py-2.5 rounded-lg text-slate-300 hover:bg-slate-700 transition-colors font-medium"
                                     >
                                         取消
