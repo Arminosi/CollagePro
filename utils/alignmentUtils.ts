@@ -21,25 +21,38 @@ export const handleAlign = (
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
 
-  // Calculate offset to move the entire group
-  let offsetX = 0;
-  let offsetY = 0;
+  // Calculate new position for each layer
+  const aligned = targetLayers.map((l: CanvasLayer) => {
+    let newX = l.x;
+    let newY = l.y;
 
-  switch(type) {
-    case 'left': offsetX = -minX; break;
-    case 'center-h': offsetX = -centerX; break;
-    case 'right': offsetX = -minX; break;
-    case 'top': offsetY = -minY; break;
-    case 'middle-v': offsetY = -centerY; break;
-    case 'bottom': offsetY = -minY; break;
-  }
+    switch(type) {
+      case 'left':
+        newX = minX;
+        break;
+      case 'center-h':
+        newX = centerX - (l.width / 2);
+        break;
+      case 'right':
+        newX = maxX - l.width;
+        break;
+      case 'top':
+        newY = minY;
+        break;
+      case 'middle-v':
+        newY = centerY - (l.height / 2);
+        break;
+      case 'bottom':
+        newY = maxY - l.height;
+        break;
+    }
 
-  // Move all selected layers by the same offset
-  const aligned = targetLayers.map((l: CanvasLayer) => ({
-    ...l,
-    x: l.x + offsetX,
-    y: l.y + offsetY
-  }));
+    return {
+      ...l,
+      x: newX,
+      y: newY
+    };
+  });
 
   return layers.map(l => {
     if (selectedIds.has(l.id)) return aligned.find(a => a.id === l.id) || l;
