@@ -5,7 +5,7 @@ export const generateExportUrl = async (
   settings: AppSettings,
   singleLayerId?: string,
   onProgress?: (progress: number, message: string) => void,
-  format: 'png' | 'jpg' = 'png',
+  format: 'png' | 'jpg' | 'webp' = 'png',
   quality: number = 0.95,
   customWidth?: number,
   customHeight?: number
@@ -28,9 +28,9 @@ export const generateExportUrl = async (
   const padding = 0;
   const canvasWidth = bounds.maxX - bounds.minX + padding * 2;
   const canvasHeight = bounds.maxY - bounds.minY + padding * 2;
-  
+
   let finalScale: number;
-  
+
   // If custom dimensions are provided, use them directly
   if (customWidth && customHeight) {
     canvas.width = customWidth;
@@ -50,11 +50,11 @@ export const generateExportUrl = async (
         scaleCount++;
       }
     });
-    
+
     // Use average scale, but cap at 4x to prevent extremely large exports
     const avgScale = scaleCount > 0 ? totalScale / scaleCount : 1;
     const exportScale = Math.min(avgScale, 4);
-    
+
     // Further limit: cap total canvas size to 16000x16000 pixels
     const maxDimension = 16000;
     finalScale = exportScale;
@@ -63,13 +63,13 @@ export const generateExportUrl = async (
       const scaleByHeight = maxDimension / canvasHeight;
       finalScale = Math.min(scaleByWidth, scaleByHeight);
     }
-    
+
     canvas.width = Math.round(canvasWidth * finalScale);
     canvas.height = Math.round(canvasHeight * finalScale);
   }
-  
+
   onProgress?.(10, `创建 ${canvas.width}x${canvas.height} 画布...`);
-  
+
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
@@ -81,19 +81,19 @@ export const generateExportUrl = async (
     ctx.fillStyle = settings.backgroundColor;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
-  
+
   onProgress?.(20, '加载图片...');
-  
+
   const totalLayers = layersToExport.length;
   for (let i = 0; i < totalLayers; i++) {
     const layer = layersToExport[i];
     const progress = 20 + Math.floor((i / totalLayers) * 70);
     onProgress?.(progress, `处理图片 ${i + 1}/${totalLayers}...`);
-    
+
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.src = layer.src;
-    
+
     // Wait for image to fully load before drawing
     await new Promise((resolve) => {
       img.onload = resolve;
@@ -103,21 +103,43 @@ export const generateExportUrl = async (
       };
       if (img.complete) resolve(null);
     });
-    
+
     // Calculate position and size in export canvas
     const drawX = (layer.x - bounds.minX + padding) * finalScale;
     const drawY = (layer.y - bounds.minY + padding) * finalScale;
     const drawWidth = layer.width * finalScale;
     const drawHeight = layer.height * finalScale;
-    
+
+    // Apply rotation and opacity if present
+    const rotation = layer.rotation || 0;
+    const opacity = layer.opacity !== undefined ? layer.opacity : 1;
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+
+    if (rotation !== 0) {
+      // Translate to center of the layer, rotate, then translate back
+      const centerX = drawX + drawWidth / 2;
+      const centerY = drawY + drawHeight / 2;
+      ctx.translate(centerX, centerY);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.translate(-centerX, -centerY);
+    }
+
     ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+    ctx.restore();
   }
-  
+
   onProgress?.(95, '生成图片...');
-  const mimeType = format === 'jpg' ? 'image/jpeg' : 'image/png';
-  const dataUrl = format === 'jpg' ? canvas.toDataURL(mimeType, quality) : canvas.toDataURL(mimeType);
+  const mimeTypes: Record<string, string> = {
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'webp': 'image/webp'
+  };
+  const mimeType = mimeTypes[format] || 'image/png';
+  const dataUrl = format === 'png' ? canvas.toDataURL(mimeType) : canvas.toDataURL(mimeType, quality);
   onProgress?.(100, '完成!');
-  
+
   return dataUrl;
 };
 
@@ -145,18 +167,23 @@ export const calculateGridDimension = (totalImages: number, knownDimension: numb
 export const estimateExportSize = (
   width: number,
   height: number,
-  format: 'png' | 'jpg',
+  format: 'png' | 'jpg' | 'webp',
   quality: number = 0.95
 ): string => {
   const pixels = width * height;
   let estimatedBytes: number;
-  
+
   if (format === 'png') {
     // PNG: more accurate estimation based on real-world data
     // Base: ~3 bytes per pixel, with compression factor
     const baseBytes = pixels * 3;
     const compressionFactor = 0.7; // PNG compression typically achieves 70% of uncompressed
     estimatedBytes = baseBytes * compressionFactor;
+  } else if (format === 'webp') {
+    // WebP: typically 25-35% smaller than PNG, similar to high-quality JPG
+    const baseBytes = pixels * 0.25;
+    const qualityFactor = 0.6 + (quality * 2.0); // Range from 0.6x to 2.6x
+    estimatedBytes = baseBytes * qualityFactor;
   } else {
     // JPG: more accurate quality-based estimation
     // Use non-linear relationship between quality and file size
@@ -164,10 +191,10 @@ export const estimateExportSize = (
     const qualityFactor = 0.5 + (quality * 2.5); // Range from 0.5x to 3x
     estimatedBytes = baseBytes * qualityFactor;
   }
-  
+
   // Add overhead for metadata (typically 1-5KB)
   estimatedBytes += 3000;
-  
+
   // Convert to readable format
   if (estimatedBytes < 1024) {
     return `${Math.round(estimatedBytes)} B`;
@@ -196,7 +223,7 @@ export const generateExportUrlWithTargetSize = async (
   layers: CanvasLayer[],
   settings: AppSettings,
   targetSizeMB: number,
-  format: 'png' | 'jpg',
+  format: 'png' | 'jpg' | 'webp',
   singleLayerId?: string,
   onProgress?: (progress: number, message: string) => void,
   initialQuality: number = 0.95,
@@ -205,20 +232,20 @@ export const generateExportUrlWithTargetSize = async (
 ): Promise<string | null> => {
   const targetSizeBytes = targetSizeMB * 1024 * 1024;
   const tolerance = 0.1; // 10% tolerance
-  
+
   onProgress?.(0, '开始智能导出...');
-  
-  if (format === 'jpg') {
-    // For JPG: adjust quality to meet target size
+
+  if (format === 'jpg' || format === 'webp') {
+    // For JPG/WebP: adjust quality to meet target size
     let quality = initialQuality;
     let minQuality = 0.3;
     let maxQuality = 1.0;
     let attempts = 0;
     const maxAttempts = 8;
-    
+
     while (attempts < maxAttempts) {
       onProgress?.(attempts * 10, `尝试导出 (质量: ${Math.round(quality * 100)}%)...`);
-      
+
       const url = await generateExportUrl(
         layers,
         settings,
@@ -229,21 +256,21 @@ export const generateExportUrlWithTargetSize = async (
         initialWidth,
         initialHeight
       );
-      
+
       if (!url) return null;
-      
+
       const actualSize = getDataUrlSize(url);
       const actualSizeMB = bytesToMB(actualSize);
-      
+
       onProgress?.(attempts * 10 + 10, `当前大小: ${actualSizeMB.toFixed(2)} MB`);
-      
+
       // Check if within tolerance
       const ratio = actualSize / targetSizeBytes;
       if (ratio >= (1 - tolerance) && ratio <= (1 + tolerance)) {
         onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB`);
         return url;
       }
-      
+
       // Adjust quality using binary search
       if (actualSize > targetSizeBytes) {
         maxQuality = quality;
@@ -252,22 +279,22 @@ export const generateExportUrlWithTargetSize = async (
         minQuality = quality;
         quality = (quality + maxQuality) / 2;
       }
-      
+
       // Prevent too low quality
       if (quality < 0.3) {
         onProgress?.(100, `已达最低质量，文件大小: ${actualSizeMB.toFixed(2)} MB`);
         return url;
       }
-      
+
       attempts++;
-      
+
       // If difference is small enough, accept it
       if (Math.abs(ratio - 1) < tolerance * 2) {
         onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB`);
         return url;
       }
     }
-    
+
     // Return last attempt if max attempts reached
     const finalUrl = await generateExportUrl(
       layers,
@@ -280,7 +307,7 @@ export const generateExportUrlWithTargetSize = async (
       initialHeight
     );
     return finalUrl;
-    
+
   } else {
     // For PNG: adjust resolution to meet target size
     // Calculate initial dimensions if not provided
@@ -293,10 +320,10 @@ export const generateExportUrlWithTargetSize = async (
         bounds.maxX = Math.max(bounds.maxX, l.x + l.width);
         bounds.maxY = Math.max(bounds.maxY, l.y + l.height);
       });
-      
+
       const canvasWidth = bounds.maxX - bounds.minX;
       const canvasHeight = bounds.maxY - bounds.minY;
-      
+
       let totalScale = 0;
       let scaleCount = 0;
       layersToExport.forEach(l => {
@@ -308,14 +335,14 @@ export const generateExportUrlWithTargetSize = async (
           scaleCount++;
         }
       });
-      
+
       const avgScale = scaleCount > 0 ? totalScale / scaleCount : 1;
       const exportScale = Math.min(avgScale, 4);
-      
+
       initialWidth = Math.round(canvasWidth * exportScale);
       initialHeight = Math.round(canvasHeight * exportScale);
     }
-    
+
     let width = initialWidth;
     let height = initialHeight;
     const aspectRatio = width / height;
@@ -324,13 +351,13 @@ export const generateExportUrlWithTargetSize = async (
     let maxScale = 1.5;
     let attempts = 0;
     const maxAttempts = 8;
-    
+
     while (attempts < maxAttempts) {
       const currentWidth = Math.round(width * scaleFactor);
       const currentHeight = Math.round(height * scaleFactor);
-      
+
       onProgress?.(attempts * 10, `尝试导出 (分辨率: ${currentWidth}x${currentHeight})...`);
-      
+
       const url = await generateExportUrl(
         layers,
         settings,
@@ -341,21 +368,21 @@ export const generateExportUrlWithTargetSize = async (
         currentWidth,
         currentHeight
       );
-      
+
       if (!url) return null;
-      
+
       const actualSize = getDataUrlSize(url);
       const actualSizeMB = bytesToMB(actualSize);
-      
+
       onProgress?.(attempts * 10 + 10, `当前大小: ${actualSizeMB.toFixed(2)} MB`);
-      
+
       // Check if within tolerance
       const ratio = actualSize / targetSizeBytes;
       if (ratio >= (1 - tolerance) && ratio <= (1 + tolerance)) {
         onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB (${currentWidth}x${currentHeight})`);
         return url;
       }
-      
+
       // Adjust scale using binary search
       if (actualSize > targetSizeBytes) {
         maxScale = scaleFactor;
@@ -364,22 +391,22 @@ export const generateExportUrlWithTargetSize = async (
         minScale = scaleFactor;
         scaleFactor = (scaleFactor + maxScale) / 2;
       }
-      
+
       // Prevent too low resolution
       if (currentWidth < 100 || currentHeight < 100) {
         onProgress?.(100, `已达最低分辨率，文件大小: ${actualSizeMB.toFixed(2)} MB`);
         return url;
       }
-      
+
       attempts++;
-      
+
       // If difference is small enough, accept it
       if (Math.abs(ratio - 1) < tolerance * 2) {
         onProgress?.(100, `完成！文件大小: ${actualSizeMB.toFixed(2)} MB (${currentWidth}x${currentHeight})`);
         return url;
       }
     }
-    
+
     // Return last attempt if max attempts reached
     const finalWidth = Math.round(width * scaleFactor);
     const finalHeight = Math.round(height * scaleFactor);
@@ -394,5 +421,135 @@ export const generateExportUrlWithTargetSize = async (
       finalHeight
     );
     return finalUrl;
+  }
+};
+
+// Generate thumbnail for performance optimization
+export const generateThumbnail = (
+  src: string,
+  maxSize: number = 400
+): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(src); // Return original if canvas fails
+        return;
+      }
+
+      // Calculate thumbnail dimensions
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxSize || height > maxSize) {
+        if (width > height) {
+          height = (height / width) * maxSize;
+          width = maxSize;
+        } else {
+          width = (width / height) * maxSize;
+          height = maxSize;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Use WebP for thumbnails as it's more efficient
+      resolve(canvas.toDataURL('image/webp', 0.8));
+    };
+    img.onerror = () => resolve(src); // Return original on error
+    img.src = src;
+  });
+};
+
+// Check if image needs thumbnail (based on size)
+export const needsThumbnail = (
+  originalWidth?: number,
+  originalHeight?: number,
+  threshold: number = 1000
+): boolean => {
+  if (!originalWidth || !originalHeight) return false;
+  return originalWidth > threshold || originalHeight > threshold;
+};
+
+// Batch export layers as separate files
+export const batchExportLayers = async (
+  layers: CanvasLayer[],
+  format: 'png' | 'jpg' | 'webp' = 'png',
+  quality: number = 0.95,
+  onProgress?: (current: number, total: number, message: string) => void
+): Promise<void> => {
+  const totalLayers = layers.length;
+  if (totalLayers === 0) return;
+
+  const mimeTypes: Record<string, string> = {
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'webp': 'image/webp'
+  };
+  const mimeType = mimeTypes[format] || 'image/png';
+  const extensions: Record<string, string> = {
+    'png': '.png',
+    'jpg': '.jpg',
+    'webp': '.webp'
+  };
+  const ext = extensions[format] || '.png';
+
+  for (let i = 0; i < totalLayers; i++) {
+    const layer = layers[i];
+    onProgress?.(i + 1, totalLayers, `导出 ${layer.name || `Layer ${i + 1}`}...`);
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+
+    await new Promise<void>((resolve) => {
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        if (ctx) {
+          // Use original dimensions if available
+          canvas.width = layer.originalWidth || Math.round(layer.width);
+          canvas.height = layer.originalHeight || Math.round(layer.height);
+
+          // Apply rotation if present
+          if (layer.rotation) {
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate((layer.rotation * Math.PI) / 180);
+            ctx.translate(-canvas.width / 2, -canvas.height / 2);
+          }
+
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          if (layer.rotation) {
+            ctx.restore();
+          }
+
+          const dataUrl = format === 'png'
+            ? canvas.toDataURL(mimeType)
+            : canvas.toDataURL(mimeType, quality);
+
+          // Download the image
+          const link = document.createElement('a');
+          const baseName = layer.name?.replace(/\.[^/.]+$/, '') || `layer-${i + 1}`;
+          link.download = baseName + ext;
+          link.href = dataUrl;
+          link.click();
+        }
+        resolve();
+      };
+      img.onerror = () => resolve();
+      img.src = layer.src;
+    });
+
+    // Small delay between downloads to prevent browser blocking
+    if (i < totalLayers - 1) {
+      await new Promise(r => setTimeout(r, 100));
+    }
   }
 };

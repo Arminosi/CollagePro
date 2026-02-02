@@ -117,7 +117,24 @@ export const translations: Record<Language, Record<string, string>> = {
     importPSDSuccess: "Successfully imported",
     importPSDFailed: "Failed to import PSD",
     importVersionSuccess: "Successfully imported",
-    importVersionFailed: "Failed to import version package"
+    importVersionFailed: "Failed to import version package",
+    // New features
+    webp: "WebP",
+    rotate90CW: "Rotate 90° CW",
+    rotate90CCW: "Rotate 90° CCW",
+    rotateCustom: "Free Rotate",
+    copyLayers: "Copy",
+    pasteLayers: "Paste",
+    batchExportLayers: "Export Layers",
+    batchExportLayersDesc: "Export each selected layer as a separate file",
+    smartSpacing: "Smart Spacing",
+    arrowMoveHint: "Use arrow keys to nudge (Shift for 10px)",
+    exportingLayer: "Exporting layer",
+    exportCompleteCount: "Exported layers",
+    noLayersToCopy: "No layers to copy",
+    layersCopied: "layers copied",
+    layersPasted: "layers pasted",
+    clipboardEmpty: "Clipboard is empty"
   },
   zh: {
     tools: "工具箱",
@@ -234,6 +251,23 @@ export const translations: Record<Language, Record<string, string>> = {
     importPSDSuccess: "成功导入",
     importPSDFailed: "导入PSD失败",
     importVersionSuccess: "成功导入",
-    importVersionFailed: "导入版本包失败"
+    importVersionFailed: "导入版本包失败",
+    // New features
+    webp: "WebP",
+    rotate90CW: "顺时针旋转90°",
+    rotate90CCW: "逆时针旋转90°",
+    rotateCustom: "自由旋转",
+    copyLayers: "复制",
+    pasteLayers: "粘贴",
+    batchExportLayers: "批量导出图层",
+    batchExportLayersDesc: "将选中的每个图层单独导出为文件",
+    smartSpacing: "智能间距",
+    arrowMoveHint: "使用方向键微调位置 (Shift加速10px)",
+    exportingLayer: "正在导出图层",
+    exportCompleteCount: "已导出图层",
+    noLayersToCopy: "没有可复制的图层",
+    layersCopied: "个图层已复制",
+    layersPasted: "个图层已粘贴",
+    clipboardEmpty: "剪贴板为空"
   }
 };

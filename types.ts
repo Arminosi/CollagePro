@@ -10,6 +10,10 @@ export interface CanvasLayer {
   name: string;
   originalWidth?: number;  // Original image width for high-quality export
   originalHeight?: number; // Original image height for high-quality export
+  rotation?: number;       // Rotation angle in degrees (0-360)
+  opacity?: number;        // Layer opacity (0-1, default 1)
+  locked?: boolean;        // Whether the layer is locked from editing
+  thumbnail?: string;      // Thumbnail data URL for performance (used for canvas display)
 }
 
 export interface AppSettings {

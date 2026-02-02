@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 import { CanvasLayer } from '../types';
 
 interface UseKeyboardShortcutsProps {
@@ -12,6 +12,10 @@ interface UseKeyboardShortcutsProps {
   onDelete: () => void;
   onToggleBatchSelect: () => void;
   onAltKeyChange: (pressed: boolean) => void;
+  onCopyLayers?: () => void;
+  onPasteLayers?: () => void;
+  onMoveLayers?: (dx: number, dy: number) => void;
+  onRotateLayers?: (angle: number) => void;
 }
 
 export const useKeyboardShortcuts = ({
@@ -24,7 +28,11 @@ export const useKeyboardShortcuts = ({
   onDeselectAll,
   onDelete,
   onToggleBatchSelect,
-  onAltKeyChange
+  onAltKeyChange,
+  onCopyLayers,
+  onPasteLayers,
+  onMoveLayers,
+  onRotateLayers
 }: UseKeyboardShortcutsProps) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -68,7 +76,19 @@ export const useKeyboardShortcuts = ({
         onDeselectAll();
       }
 
-      // V key to toggle batch select mode
+      // Ctrl+C / Cmd+C for copy
+      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !isInputField) {
+        e.preventDefault();
+        onCopyLayers?.();
+      }
+
+      // Ctrl+V / Cmd+V for paste
+      if ((e.metaKey || e.ctrlKey) && e.key === 'v' && !isInputField) {
+        e.preventDefault();
+        onPasteLayers?.();
+      }
+
+      // V key to toggle batch select mode (without Ctrl/Cmd)
       if (e.key === 'v' && !isInputField && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         onToggleBatchSelect();
@@ -77,6 +97,31 @@ export const useKeyboardShortcuts = ({
       // Delete/Backspace to delete selected layers
       if ((e.key === 'Delete' || e.key === 'Backspace') && !isInputField) {
         if (selectedIds.size > 0) onDelete();
+      }
+
+      // Arrow keys to move selected layers
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && !isInputField) {
+        if (selectedIds.size > 0 && onMoveLayers) {
+          e.preventDefault();
+          const step = e.shiftKey ? 10 : 1;
+          let dx = 0, dy = 0;
+          switch (e.key) {
+            case 'ArrowUp': dy = -step; break;
+            case 'ArrowDown': dy = step; break;
+            case 'ArrowLeft': dx = -step; break;
+            case 'ArrowRight': dx = step; break;
+          }
+          onMoveLayers(dx, dy);
+        }
+      }
+
+      // R key to rotate 90° clockwise (with Shift for counter-clockwise)
+      if (e.key === 'r' && !isInputField && !e.ctrlKey && !e.metaKey) {
+        if (selectedIds.size > 0 && onRotateLayers) {
+          e.preventDefault();
+          const angle = e.shiftKey ? -90 : 90;
+          onRotateLayers(angle);
+        }
       }
     };
 
@@ -99,5 +144,5 @@ export const useKeyboardShortcuts = ({
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', handleBlur);
     };
-  }, [layers, selectedIds, onUndo, onRedo, onSave, onSelectAll, onDeselectAll, onDelete, onToggleBatchSelect, onAltKeyChange]);
+  }, [layers, selectedIds, onUndo, onRedo, onSave, onSelectAll, onDeselectAll, onDelete, onToggleBatchSelect, onAltKeyChange, onCopyLayers, onPasteLayers, onMoveLayers, onRotateLayers]);
 };
