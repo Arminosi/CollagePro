@@ -20,7 +20,7 @@ import {
   selectAllLayers as selectAllLayersUtil,
   clearCanvas as clearCanvasUtil
 } from './utils/layerOperations';
-import { generateExportUrl, downloadImage, calculateGridDimension, estimateExportSize, generateExportUrlWithTargetSize } from './utils/exportUtils';
+import { generateExportUrl, downloadImage, calculateGridDimension, estimateExportSize, generateExportUrlWithTargetSize, generateThumbnail, needsThumbnail, batchExportLayers } from './utils/exportUtils';
 import { handleAlign as handleAlignUtil, handleAutoStitch as handleAutoStitchUtil } from './utils/alignmentUtils';
 import { handleGridLayout as handleGridLayoutUtil } from './utils/gridLayoutUtils';
 import { getCanvasCoordinates, zoomAtPoint as zoomAtPointUtil, handleFitView as handleFitViewUtil, getBackgroundStyle } from './utils/canvasUtils';
@@ -29,7 +29,8 @@ import {
   Magnet, Scaling, Menu, LayoutGrid,
   AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignEndVertical, AlignVerticalJustifyCenter,
   AlignVerticalJustifyCenter as VStitchIcon, AlignHorizontalJustifyCenter as HStitchIcon, Wand2,
-  Layers, Combine, Info, MoreHorizontal, MousePointer, X, ChevronUp, ChevronDown, ArrowLeftRight, HelpCircle, Keyboard
+  Layers, Combine, Info, MoreHorizontal, MousePointer, X, ChevronUp, ChevronDown, ArrowLeftRight, HelpCircle, Keyboard,
+  RotateCw, Copy, ClipboardPaste, FileDown
 } from 'lucide-react';
 import { translations } from './utils/i18n';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -48,7 +49,7 @@ export default function App() {
   const [isBatchSelectMode, setIsBatchSelectMode] = useState(false);
   const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
   const [showExportDialog, setShowExportDialog] = useState(false);
-  const [exportFormat, setExportFormat] = useState<'png' | 'jpg'>('png');
+  const [exportFormat, setExportFormat] = useState<'png' | 'jpg' | 'webp'>('png');
   const [exportQuality, setExportQuality] = useState(0.95);
   const [estimatedSize, setEstimatedSize] = useState<string>('');
   const [exportWidth, setExportWidth] = useState(0);
@@ -76,6 +77,7 @@ export default function App() {
     size: string;
     format: string;
   } | null>(null);
+  const [clipboard, setClipboard] = useState<CanvasLayer[]>([]); // Clipboard for copy/paste
 
   // Toast notification helper
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
@@ -234,10 +236,12 @@ export default function App() {
             finishImport();
           }
         };
-        img.onload = () => {
+        img.onload = async () => {
           const count = layers.length + loadedCount;
-          const aspectRatio = img.width / img.height;
-          const baseSize = 300;
+
+          // Use original image dimensions for maximum clarity
+          const originalWidth = img.width;
+          const originalHeight = img.height;
 
           // Use drop position if provided, otherwise use viewport center
           const centerPosition = dropPosition || {
@@ -245,17 +249,29 @@ export default function App() {
             y: -pan.y + (window.innerHeight / 2) / zoom
           };
 
+          const originalSrc = ev.target?.result as string;
+
+          // Generate thumbnail for large images to improve performance
+          let thumbnail: string | undefined;
+          if (needsThumbnail(img.width, img.height, 1000)) {
+            thumbnail = await generateThumbnail(originalSrc, 600);
+          }
+
+          // Calculate position: center the image at drop/viewport position with stacking offset
+          const stackOffset = count * 20;
+
           newLayers.push({
             id: Math.random().toString(36).substr(2, 9),
-            src: ev.target?.result as string,
-            x: centerPosition.x - 150 + (count * 20),
-            y: centerPosition.y - 150 + (count * 20),
-            width: baseSize,
-            height: baseSize / aspectRatio,
+            src: originalSrc,
+            thumbnail: thumbnail,
+            x: centerPosition.x - (originalWidth / 2) + stackOffset,
+            y: centerPosition.y - (originalHeight / 2) + stackOffset,
+            width: originalWidth,
+            height: originalHeight,
             zIndex: count,
             name: file.name,
-            originalWidth: img.width,   // Save original resolution
-            originalHeight: img.height  // Save original resolution
+            originalWidth: originalWidth,
+            originalHeight: originalHeight
           });
 
           loadedCount++;
@@ -1762,6 +1778,134 @@ To restore this version:
     }
   };
 
+  // Copy selected layers to clipboard
+  const copyLayers = useCallback(() => {
+    if (selectedIds.size === 0) {
+      showToast(translations[lang].noLayersToCopy || 'No layers to copy', 'error');
+      return;
+    }
+    const selectedLayers = layers.filter(l => selectedIds.has(l.id));
+    setClipboard(selectedLayers);
+    showToast(`${selectedLayers.length} ${translations[lang].layersCopied || 'layers copied'}`, 'success');
+  }, [layers, selectedIds, lang, showToast]);
+
+  // Paste layers from clipboard
+  const pasteLayers = useCallback(() => {
+    if (clipboard.length === 0) {
+      showToast(translations[lang].clipboardEmpty || 'Clipboard is empty', 'error');
+      return;
+    }
+    const offset = 20; // Offset pasted layers slightly
+    const newLayers = clipboard.map(layer => ({
+      ...layer,
+      id: Math.random().toString(36).substr(2, 9),
+      x: layer.x + offset,
+      y: layer.y + offset,
+      zIndex: layers.length + clipboard.indexOf(layer)
+    }));
+    const allLayers = [...layers, ...newLayers];
+    setLayers(allLayers);
+    pushHistory(allLayers);
+    setSelectedIds(new Set(newLayers.map(l => l.id)));
+    showToast(`${newLayers.length} ${translations[lang].layersPasted || 'layers pasted'}`, 'success');
+  }, [clipboard, layers, lang, showToast, pushHistory]);
+
+  // Move selected layers by delta
+  const moveLayers = useCallback((dx: number, dy: number) => {
+    if (selectedIds.size === 0) return;
+    const newLayers = layers.map(layer => {
+      if (selectedIds.has(layer.id) && !layer.locked) {
+        return { ...layer, x: layer.x + dx, y: layer.y + dy };
+      }
+      return layer;
+    });
+    setLayers(newLayers);
+    pushHistory(newLayers);
+  }, [layers, selectedIds, pushHistory]);
+
+  // Rotate selected layers
+  const rotateLayers = useCallback((angle: number) => {
+    if (selectedIds.size === 0) return;
+    const newLayers = layers.map(layer => {
+      if (selectedIds.has(layer.id) && !layer.locked) {
+        const currentRotation = layer.rotation || 0;
+        let newRotation = (currentRotation + angle) % 360;
+        if (newRotation < 0) newRotation += 360;
+        return { ...layer, rotation: newRotation };
+      }
+      return layer;
+    });
+    setLayers(newLayers);
+    pushHistory(newLayers);
+  }, [layers, selectedIds, pushHistory]);
+
+  // Reset rotation of selected layers
+  const resetRotation = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    const newLayers = layers.map(layer => {
+      if (selectedIds.has(layer.id) && !layer.locked) {
+        return { ...layer, rotation: 0 };
+      }
+      return layer;
+    });
+    setLayers(newLayers);
+    pushHistory(newLayers);
+  }, [layers, selectedIds, pushHistory]);
+
+  // Fit selected layers to their original resolution (1:1 pixel mapping)
+  const fitToOriginalResolution = useCallback(() => {
+    if (selectedIds.size === 0) return;
+
+    const newLayers = layers.map(layer => {
+      if (selectedIds.has(layer.id) && !layer.locked) {
+        const originalWidth = layer.originalWidth || layer.width;
+        const originalHeight = layer.originalHeight || layer.height;
+
+        // Calculate scale factor to maintain center position
+        const scaleX = originalWidth / layer.width;
+        const scaleY = originalHeight / layer.height;
+
+        // Adjust position to keep center point
+        const centerX = layer.x + layer.width / 2;
+        const centerY = layer.y + layer.height / 2;
+        const newX = centerX - originalWidth / 2;
+        const newY = centerY - originalHeight / 2;
+
+        return {
+          ...layer,
+          x: newX,
+          y: newY,
+          width: originalWidth,
+          height: originalHeight
+        };
+      }
+      return layer;
+    });
+
+    setLayers(newLayers);
+    pushHistory(newLayers);
+    showToast(lang === 'zh' ? '已调整为原始分辨率' : 'Adjusted to original resolution', 'success');
+  }, [layers, selectedIds, pushHistory, lang, showToast]);
+
+  // Batch export selected layers
+  const handleBatchExportLayers = useCallback(async () => {
+    const layersToExport = selectedIds.size > 0
+      ? layers.filter(l => selectedIds.has(l.id))
+      : layers;
+
+    if (layersToExport.length === 0) return;
+
+    await batchExportLayers(
+      layersToExport,
+      exportFormat,
+      exportQuality,
+      (current, total, message) => {
+        showToast(`${translations[lang].exportingLayer || 'Exporting layer'} ${current}/${total}`, 'success');
+      }
+    );
+    showToast(`${translations[lang].exportCompleteCount || 'Exported layers'}: ${layersToExport.length}`, 'success');
+  }, [layers, selectedIds, exportFormat, exportQuality, lang, showToast]);
+
   // Use keyboard shortcuts hook
   useKeyboardShortcuts({
     layers,
@@ -1773,7 +1917,11 @@ To restore this version:
     onDeselectAll: () => setSelectedIds(new Set()),
     onDelete: deleteSelected,
     onToggleBatchSelect: () => setIsBatchSelectMode(prev => !prev),
-    onAltKeyChange: setIsAltKeyPressed
+    onAltKeyChange: setIsAltKeyPressed,
+    onCopyLayers: copyLayers,
+    onPasteLayers: pasteLayers,
+    onMoveLayers: moveLayers,
+    onRotateLayers: rotateLayers
   });
 
   // Auto-save every 1 minute
@@ -1814,27 +1962,57 @@ To restore this version:
     if (!container) return;
 
     const handleWheel = (e: WheelEvent) => {
-      // Mouse wheel for zoom (no Ctrl needed)
-      // Ctrl+Wheel still supported for compatibility
       e.preventDefault();
       const containerRect = container.getBoundingClientRect();
 
-      // Mouse position relative to container
+      // Mouse/trackpad position relative to container
       const mouseX = e.clientX - containerRect.left;
       const mouseY = e.clientY - containerRect.top;
 
-      // Calculate new zoom level
-      const zoomDelta = -e.deltaY * 0.001;
-      const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
-      const zoomRatio = newZoom / zoom;
+      // Check if this is a Mac trackpad pinch gesture (ctrlKey is set for pinch-to-zoom)
+      const isPinchGesture = e.ctrlKey;
 
-      // Adjust pan to keep the point under the mouse fixed
-      // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
-      const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
-      const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+      // Check if it's horizontal scrolling (trackpad two-finger horizontal swipe)
+      const isHorizontalScroll = Math.abs(e.deltaX) > Math.abs(e.deltaY) && !isPinchGesture;
 
-      setZoom(newZoom);
-      setPan({ x: newPanX, y: newPanY });
+      // Two-finger scroll on trackpad for panning (when not pinching)
+      // Heuristic: if deltaMode is 0 (pixels) and no ctrlKey, it's likely trackpad scroll
+      const isTrackpadScroll = e.deltaMode === 0 && !isPinchGesture && !e.shiftKey;
+
+      if (isPinchGesture) {
+        // Pinch-to-zoom on Mac trackpad
+        // deltaY is typically smaller for trackpad, so use a larger multiplier
+        const zoomSensitivity = 0.01;
+        const zoomDelta = -e.deltaY * zoomSensitivity;
+        const newZoom = Math.min(5, Math.max(0.1, zoom * (1 + zoomDelta)));
+        const zoomRatio = newZoom / zoom;
+
+        // Adjust pan to keep the point under the pointer fixed
+        const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
+        const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+
+        setZoom(newZoom);
+        setPan({ x: newPanX, y: newPanY });
+      } else if (isTrackpadScroll) {
+        // Two-finger scroll on trackpad = pan the canvas
+        // Invert the direction for natural scrolling feel
+        const panSpeed = 1;
+        setPan(prev => ({
+          x: prev.x - e.deltaX * panSpeed,
+          y: prev.y - e.deltaY * panSpeed
+        }));
+      } else {
+        // Regular mouse wheel = zoom (original behavior)
+        const zoomDelta = -e.deltaY * 0.001;
+        const newZoom = Math.min(5, Math.max(0.1, zoom + zoomDelta));
+        const zoomRatio = newZoom / zoom;
+
+        const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
+        const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+
+        setZoom(newZoom);
+        setPan({ x: newPanX, y: newPanY });
+      }
     };
 
     // Use passive: false to allow preventDefault
@@ -2003,6 +2181,16 @@ To restore this version:
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: '100%', height: '100%' }}>
             {layers.map((layer) => {
               const isSelected = selectedIds.has(layer.id);
+              const rotation = layer.rotation || 0;
+              const opacity = layer.opacity !== undefined ? layer.opacity : 1;
+
+              // Smart image quality: use original when zoomed in for clarity, thumbnail when zoomed out for performance
+              // Threshold: when zoom > 1.5 OR when the displayed size exceeds 500px, use original
+              const displayedWidth = layer.width * zoom;
+              const displayedHeight = layer.height * zoom;
+              const needsHighQuality = zoom > 1.5 || displayedWidth > 500 || displayedHeight > 500;
+              const displaySrc = (needsHighQuality || !layer.thumbnail) ? layer.src : layer.thumbnail;
+
               return (
                 <div
                   key={layer.id}
@@ -2015,14 +2203,17 @@ To restore this version:
                     width: layer.width,
                     height: layer.height,
                     touchAction: 'none',
+                    transform: rotation ? `rotate(${rotation}deg)` : undefined,
+                    transformOrigin: 'center center',
+                    opacity: opacity,
                     ...(isSelected && {
                       outline: `${Math.max(2 / zoom, 1)}px solid #6366f1`,
                       outlineOffset: `${Math.max(-1 / zoom, -0.5)}px`
                     })
                   }}
-                  className="group select-none cursor-move hover:ring-1 hover:ring-slate-500"
+                  className={`group select-none ${layer.locked ? 'cursor-not-allowed' : 'cursor-move'} hover:ring-1 hover:ring-slate-500`}
                 >
-                  <img src={layer.src} alt="layer" className="w-full h-full object-fill pointer-events-none select-none shadow-sm" draggable={false} />
+                  <img src={displaySrc} alt="layer" className="w-full h-full object-fill pointer-events-none select-none shadow-sm" draggable={false} />
                   {isSelected && (() => {
                     // Calculate handle size that stays constant regardless of zoom
                     // Target visual size: 12px, adjust for zoom
@@ -2475,6 +2666,29 @@ To restore this version:
                         <TooltipButton title={translations[lang].alignMiddle} onClick={() => handleAlign('middle-v')} icon={AlignVerticalJustifyCenter} className="bg-slate-800/50 hover:bg-slate-700 rotate-90" />
                         <TooltipButton title={translations[lang].alignBottom} onClick={() => handleAlign('bottom')} icon={AlignEndVertical} className="bg-slate-800/50 hover:bg-slate-700" />
                       </div>
+
+                      {/* Rotation and Batch Export */}
+                      <div className="h-px bg-slate-700 my-2" />
+                      <div className="grid grid-cols-3 gap-1">
+                        <TooltipButton
+                          title={translations[lang].rotate90CCW || 'Rotate 90° CCW'}
+                          onClick={() => rotateLayers(-90)}
+                          icon={RotateCw}
+                          className="bg-slate-800/50 hover:bg-slate-700 -scale-x-100"
+                        />
+                        <TooltipButton
+                          title={translations[lang].rotate90CW || 'Rotate 90° CW'}
+                          onClick={() => rotateLayers(90)}
+                          icon={RotateCw}
+                          className="bg-slate-800/50 hover:bg-slate-700"
+                        />
+                        <TooltipButton
+                          title={translations[lang].batchExportLayers || 'Export Layers'}
+                          onClick={() => handleBatchExportLayers()}
+                          icon={FileDown}
+                          className="bg-slate-800/50 hover:bg-slate-700"
+                        />
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -2612,25 +2826,25 @@ To restore this version:
                     {/* Format Selection */}
                     <div className="space-y-3">
                       <label className="text-sm font-medium text-slate-300">图片格式</label>
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-3 gap-3">
                         <button
                           onClick={() => setExportFormat('png')}
                           className={`p-4 rounded-lg border-2 transition-all ${exportFormat === 'png'
-                              ? 'border-primary bg-primary/10'
-                              : 'border-slate-700 hover:border-slate-600'
+                            ? 'border-primary bg-primary/10'
+                            : 'border-slate-700 hover:border-slate-600'
                             }`}
                         >
                           <div className="text-left">
                             <div className="font-bold text-white mb-2">PNG</div>
                             <div className="flex flex-col gap-1.5">
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
-                                <span className="text-emerald-400">✓</span> 支持透明通道
+                                <span className="text-emerald-400">✓</span> 透明
                               </span>
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
-                                <span className="text-emerald-400">✓</span> 无损压缩
+                                <span className="text-emerald-400">✓</span> 无损
                               </span>
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-red-500/20 text-red-400 rounded-full w-fit">
-                                <span className="text-red-400">✗</span> 文件较大
+                                <span className="text-red-400">✗</span> 较大
                               </span>
                             </div>
                           </div>
@@ -2638,21 +2852,43 @@ To restore this version:
                         <button
                           onClick={() => setExportFormat('jpg')}
                           className={`p-4 rounded-lg border-2 transition-all ${exportFormat === 'jpg'
-                              ? 'border-primary bg-primary/10'
-                              : 'border-slate-700 hover:border-slate-600'
+                            ? 'border-primary bg-primary/10'
+                            : 'border-slate-700 hover:border-slate-600'
                             }`}
                         >
                           <div className="text-left">
                             <div className="font-bold text-white mb-2">JPG</div>
                             <div className="flex flex-col gap-1.5">
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-red-500/20 text-red-400 rounded-full w-fit">
-                                <span className="text-red-400">✗</span> 不支持透明
+                                <span className="text-red-400">✗</span> 透明
                               </span>
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
-                                <span className="text-emerald-400">✓</span> 文件较小
+                                <span className="text-emerald-400">✓</span> 较小
                               </span>
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
-                                <span className="text-emerald-400">✓</span> 兼容性好
+                                <span className="text-emerald-400">✓</span> 兼容
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => setExportFormat('webp')}
+                          className={`p-4 rounded-lg border-2 transition-all ${exportFormat === 'webp'
+                            ? 'border-primary bg-primary/10'
+                            : 'border-slate-700 hover:border-slate-600'
+                            }`}
+                        >
+                          <div className="text-left">
+                            <div className="font-bold text-white mb-2">WebP</div>
+                            <div className="flex flex-col gap-1.5">
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
+                                <span className="text-emerald-400">✓</span> 透明
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full w-fit">
+                                <span className="text-emerald-400">✓</span> 最小
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded-full w-fit">
+                                <span className="text-amber-400">~</span> 现代
                               </span>
                             </div>
                           </div>
@@ -2660,8 +2896,9 @@ To restore this version:
                       </div>
                     </div>
 
-                    {/* Quality Slider for JPG */}
-                    {exportFormat === 'jpg' && (
+
+                    {/* Quality Slider for JPG/WebP */}
+                    {(exportFormat === 'jpg' || exportFormat === 'webp') && (
                       <div className="space-y-3" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-between">
                           <label className="text-sm font-medium text-slate-300">图片质量</label>
@@ -2710,8 +2947,8 @@ To restore this version:
                         <button
                           onClick={() => setEnableTargetSize(!enableTargetSize)}
                           className={`text-xs px-2.5 py-1 rounded-md transition-colors ${enableTargetSize
-                              ? 'bg-primary text-white'
-                              : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                            ? 'bg-primary text-white'
+                            : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
                             }`}
                         >
                           {enableTargetSize ? '已启用' : '已禁用'}
@@ -2776,8 +3013,8 @@ To restore this version:
                             }
                           }}
                           className={`text-xs px-2.5 py-1 rounded-md transition-colors ${isCustomResolution
-                              ? 'bg-primary text-white'
-                              : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                            ? 'bg-primary text-white'
+                            : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
                             }`}
                         >
                           {isCustomResolution ? '自动' : '自定义'}
@@ -2792,8 +3029,8 @@ To restore this version:
                             onChange={(e) => handleWidthChange(parseFloat(e.target.value) || 0)}
                             disabled={!isCustomResolution}
                             className={`w-full px-3 py-2 rounded-lg border text-sm font-mono ${isCustomResolution
-                                ? 'bg-slate-700 border-slate-600 text-white'
-                                : 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
+                              ? 'bg-slate-700 border-slate-600 text-white'
+                              : 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
                               }`}
                             min="1"
                             step="1"
@@ -2810,10 +3047,10 @@ To restore this version:
                           }}
                           disabled={!isCustomResolution}
                           className={`p-2 rounded-lg transition-colors mt-0 ${isCustomResolution
-                              ? lockAspectRatio
-                                ? 'bg-primary text-white hover:bg-indigo-600'
-                                : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
-                              : 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                            ? lockAspectRatio
+                              ? 'bg-primary text-white hover:bg-indigo-600'
+                              : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                            : 'bg-slate-800 text-slate-600 cursor-not-allowed'
                             }`}
                           title={lockAspectRatio ? '已锁定比例' : '未锁定比例'}
                         >
@@ -2837,8 +3074,8 @@ To restore this version:
                             onChange={(e) => handleHeightChange(parseFloat(e.target.value) || 0)}
                             disabled={!isCustomResolution}
                             className={`w-full px-3 py-2 rounded-lg border text-sm font-mono ${isCustomResolution
-                                ? 'bg-slate-700 border-slate-600 text-white'
-                                : 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
+                              ? 'bg-slate-700 border-slate-600 text-white'
+                              : 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
                               }`}
                             min="1"
                             step="1"
@@ -2935,8 +3172,8 @@ To restore this version:
                           }
                         }}
                         className={`w-full px-4 py-3 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${gifWarningClickCount >= 1
-                            ? 'bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
-                            : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                          ? 'bg-primary hover:bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                          : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                           }`}
                       >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3113,6 +3350,10 @@ To restore this version:
               onFitView={() => handleFitView()}
               onSelectAll={selectAllLayers}
               onDeselectAll={() => setSelectedIds(new Set())}
+              onRotate90CW={() => rotateLayers(90)}
+              onRotate90CCW={() => rotateLayers(-90)}
+              onResetRotation={resetRotation}
+              onFitToOriginalResolution={fitToOriginalResolution}
             />
           )}
 
@@ -3182,6 +3423,12 @@ To restore this version:
                         <ShortcutItem label={translations[lang].shortcutDeselect} keys={["Ctrl", "D"]} />
                         <ShortcutItem label={translations[lang].shortcutDelete} keys={["Del"]} altKeys={["Backspace"]} />
                         <ShortcutItem label={translations[lang].shortcutBatchSelect} keys={["V"]} />
+                        <ShortcutItem label={translations[lang].copyLayers || 'Copy'} keys={["Ctrl", "C"]} />
+                        <ShortcutItem label={translations[lang].pasteLayers || 'Paste'} keys={["Ctrl", "V"]} />
+                        <ShortcutItem label={translations[lang].rotate90CW || 'Rotate 90° CW'} keys={["R"]} />
+                        <ShortcutItem label={translations[lang].rotate90CCW || 'Rotate 90° CCW'} keys={["Shift", "R"]} />
+                        <ShortcutItem label={lang === 'zh' ? '微调位置' : 'Nudge'} keys={["↑", "↓", "←", "→"]} />
+                        <ShortcutItem label={lang === 'zh' ? '快速移动' : 'Fast Nudge'} keys={["Shift", "Arrow"]} />
                       </div>
                     </div>
 
@@ -3238,8 +3485,8 @@ To restore this version:
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
                 className={`fixed top-20 left-1/2 -translate-x-1/2 z-70 px-6 py-3 rounded-lg shadow-2xl border flex items-center gap-3 ${toast.type === 'success'
-                    ? 'bg-emerald-600 border-emerald-500 text-white'
-                    : 'bg-red-600 border-red-500 text-white'
+                  ? 'bg-emerald-600 border-emerald-500 text-white'
+                  : 'bg-red-600 border-red-500 text-white'
                   }`}
               >
                 <span className="text-sm font-medium">{toast.message}</span>
