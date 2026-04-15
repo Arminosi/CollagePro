@@ -34,6 +34,35 @@ import {
 import { translations } from './utils/i18n';
 import { AnimatePresence, motion } from 'framer-motion';
 
+const WHEEL_ZOOM_STEP = 0.02;
+
+const MIME_TYPE_TO_EXTENSION: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg'
+};
+
+const getExtensionFromMimeType = (mimeType: string) => MIME_TYPE_TO_EXTENSION[mimeType] || 'png';
+
+const dataUrlToFile = (dataUrl: string, fileName: string): File | null => {
+  const matches = dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+  if (!matches) return null;
+
+  const [, mimeType, base64Data] = matches;
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return new File([bytes], fileName, { type: mimeType });
+};
+
 
 export default function App() {
   // --- State ---
@@ -352,6 +381,85 @@ export default function App() {
   const handleDragOver = (e: React.DragEvent) => {
       e.preventDefault();
   };
+
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInputField = !!target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      );
+
+      if (isInputField || !e.clipboardData) {
+        return;
+      }
+
+      const timestamp = Date.now();
+      const imageFiles = Array.from(e.clipboardData.items)
+        .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+        .map((item, index) => {
+          const file = item.getAsFile();
+          if (!file) return null;
+
+          if (file.name) {
+            return file;
+          }
+
+          const extension = getExtensionFromMimeType(file.type);
+          return new File([file], `pasted-image-${timestamp}-${index + 1}.${extension}`, {
+            type: file.type
+          });
+        })
+        .filter((file): file is File => file !== null);
+
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        processFiles(imageFiles);
+        return;
+      }
+
+      const html = e.clipboardData.getData('text/html');
+      if (html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const dataUrlFiles = Array.from(doc.querySelectorAll('img'))
+          .map((img, index) => {
+            const src = img.getAttribute('src')?.trim();
+            if (!src || !src.startsWith('data:image/')) return null;
+
+            const mimeType = src.slice(5, src.indexOf(';'));
+            return dataUrlToFile(
+              src,
+              `pasted-image-${timestamp}-${index + 1}.${getExtensionFromMimeType(mimeType)}`
+            );
+          })
+          .filter((file): file is File => file !== null);
+
+        if (dataUrlFiles.length > 0) {
+          e.preventDefault();
+          processFiles(dataUrlFiles);
+          return;
+        }
+      }
+
+      const plainText = e.clipboardData.getData('text/plain').trim();
+      if (plainText.startsWith('data:image/')) {
+        const mimeType = plainText.slice(5, plainText.indexOf(';'));
+        const file = dataUrlToFile(
+          plainText,
+          `pasted-image-${timestamp}-1.${getExtensionFromMimeType(mimeType)}`
+        );
+
+        if (file) {
+          e.preventDefault();
+          processFiles([file]);
+        }
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [processFiles]);
 
   // --- Logic for Auto Stitching & Alignment ---
   const handleAutoStitch = (direction: 'vertical' | 'horizontal') => {
@@ -1756,14 +1864,16 @@ To restore this version:
     return () => document.removeEventListener('wheel', preventBrowserZoom);
   }, []);
 
-  // Handle wheel zoom on canvas container
+  // Handle Ctrl/Cmd + wheel zoom on canvas container
   useEffect(() => {
     const container = canvasContainerRef.current;
     if (!container) return;
 
     const handleWheel = (e: WheelEvent) => {
-      // Mouse wheel for zoom (no Ctrl needed)
-      // Ctrl+Wheel still supported for compatibility
+      if (!e.ctrlKey && !e.metaKey) {
+        return;
+      }
+
       e.preventDefault();
       const containerRect = container.getBoundingClientRect();
 
@@ -1771,18 +1881,12 @@ To restore this version:
       const mouseX = e.clientX - containerRect.left;
       const mouseY = e.clientY - containerRect.top;
 
-      // Calculate new zoom level
-      const zoomDelta = -e.deltaY * 0.001;
-      const newZoom = Math.min(3, Math.max(0.2, zoom + zoomDelta));
-      const zoomRatio = newZoom / zoom;
+      const zoomDirection = e.deltaY < 0 ? 1 : -1;
+      const newZoom = zoom + zoomDirection * WHEEL_ZOOM_STEP;
+      const result = zoomAtPointUtil(newZoom, zoom, pan, containerRect, mouseX, mouseY);
 
-      // Adjust pan to keep the point under the mouse fixed
-      // Formula: newPan = mousePos - (mousePos - oldPan) * zoomRatio
-      const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
-      const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
-
-      setZoom(newZoom);
-      setPan({ x: newPanX, y: newPanY });
+      setZoom(result.zoom);
+      setPan(result.pan);
     };
 
     // Use passive: false to allow preventDefault
@@ -3151,7 +3255,7 @@ To restore this version:
                                         <ShortcutItem label={translations[lang].mouseResize} keys={[lang === 'zh' ? 'Corner + 拖动' : 'Corner + Drag']} isMouseOp />
                                         <ShortcutItem label={translations[lang].mouseBoxSelect} keys={[lang === 'zh' ? '拖动' : 'Drag']} isMouseOp note={translations[lang].batchModeNote} />
                                         <ShortcutItem label={translations[lang].mouseAltBox} keys={[lang === 'zh' ? 'Alt + 拖动' : 'Alt + Drag']} isMouseOp note={translations[lang].batchModeNote} />
-                                        <ShortcutItem label={translations[lang].mouseWheel} keys={[lang === 'zh' ? '滚轮' : 'Scroll']} isMouseOp />
+                                        <ShortcutItem label={translations[lang].mouseWheel} keys={[lang === 'zh' ? 'Ctrl + 滚轮' : 'Ctrl + Scroll']} isMouseOp />
                                     </div>
                                 </div>
                             </motion.div>
